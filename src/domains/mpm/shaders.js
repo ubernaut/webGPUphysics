@@ -168,16 +168,21 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   // Phase 2: Gas (Steam) - Ideal Gas EOS
   
   var stress = mat3x3f(vec3f(0.), vec3f(0.), vec3f(0.));
-  var volume = p.mass / max(density, 1e-6); // Evolving volume for all phases (simplification)
+  var volume: f32;
 
   if (p.phase < 0.5) { // Solid
-     // Neo-Hookean
-     // mu, lambda from stiffness
-     let mu = stiffness * 10.0; // Solids are stiffer
-     let lambda = stiffness * 10.0;
-     
+     // For solids, use Lagrangian volume: V = V0 * det(F)
+     // p.volume stores V0 (initial volume)
      let F = p.F;
      let J = determinant(F);
+     volume = p.volume * J;
+
+     // Neo-Hookean
+     // mu, lambda from stiffness
+     // Solids need much higher stiffness than fluids to hold shape against gravity/impact
+     let mu = stiffness * 100.0; 
+     let lambda = stiffness * 100.0;
+     
      // Simple Neo-Hookean: 
      // P = mu * (F - F^-T) + lambda * log(J) * F^-T
      // Stress = (1/J) * P * F^T
@@ -192,26 +197,33 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
      let FFT = F * transpose(F);
      let I = mat3x3f(vec3f(1,0,0), vec3f(0,1,0), vec3f(0,0,1));
      
-     stress = (mu / J) * (FFT - I) + (lambda / J) * log(max(J, 1e-6)) * I;
-  } else if (p.phase < 1.5) { // Liquid
-     let pressure = max(-0.0, stiffness * (pow(density / rest_density, 5.0) - 1.0));
-     stress = mat3x3f(
+     // Clamp J to prevent infinite compression instability (especially with high jitter)
+     let clampedJ = max(J, 0.2); 
+     stress = (mu / clampedJ) * (FFT - I) + (lambda / clampedJ) * log(clampedJ) * I;
+  } else {
+     // For fluids/gas, use Eulerian volume from grid density
+     volume = p.mass / max(density, 1e-6);
+     
+     if (p.phase < 1.5) { // Liquid
+        let pressure = max(-0.0, stiffness * (pow(density / rest_density, 5.0) - 1.0));
+        stress = mat3x3f(
         vec3f(-pressure, 0.0, 0.0),
         vec3f(0.0, -pressure, 0.0),
         vec3f(0.0, 0.0, -pressure)
      );
-     let dudv = p.C;
-     let strain = dudv + transpose(dudv);
-     stress += dynamic_viscosity * strain;
-  } else { // Gas
-     // Ideal Gas P = rho * R * T ?
-     // Simply higher pressure, lower density
-     let pressure = max(0.0, stiffness * 0.1 * (density / rest_density - 1.0)); // Simple linear EOS
-     stress = mat3x3f(
-        vec3f(-pressure, 0.0, 0.0),
-        vec3f(0.0, -pressure, 0.0),
-        vec3f(0.0, 0.0, -pressure)
-     );
+        let dudv = p.C;
+        let strain = dudv + transpose(dudv);
+        stress += dynamic_viscosity * strain;
+     } else { // Gas
+        // Ideal Gas-like EOS: P ~ density * temperature
+        // Boost pressure to ensure visual expansion against gravity
+        let pressure = stiffness * 5.0 * (density / rest_density) * (p.temperature / 273.0);
+        stress = mat3x3f(
+            vec3f(-pressure, 0.0, 0.0),
+            vec3f(0.0, -pressure, 0.0),
+            vec3f(0.0, 0.0, -pressure)
+        );
+     }
   }
 
   let factor = -volume * 4.0 * stress * dt;

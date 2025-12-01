@@ -37,12 +37,12 @@ const params = {
   spacing: 0.65,
   jitter: 0.5,
   temperature: 273.0,
-  dt: 0.2,
+  dt: 0.1,
   stiffness: 2.5,
   restDensity: 4.0,
   dynamicViscosity: 0.08,
   iterations: 1,
-  fixedPointScale: 1e7,
+  fixedPointScale: 1e5,
   visualRadius: 0.2, // For particles
   fluidRadius: 1,   // For fluid (larger for overlap)
   
@@ -323,14 +323,20 @@ async function initSimulation() {
         gridSize, 
         jitter: params.jitter, 
         spacing: params.spacing,
-        temperature: params.temperature 
+        temperature: params.temperature,
+        restDensity: params.restDensity
     };
+
+    // Sub-stepping for stability
+    // Fix physics step to a stable value (e.g. 5ms) and iterate to match requested dt
+    const physics_dt = 0.005;
+    const iterations = Math.ceil(params.dt / physics_dt);
 
     const constants = {
         stiffness: params.stiffness,
         restDensity: params.restDensity,
         dynamicViscosity: params.dynamicViscosity,
-        dt: params.dt,
+        dt: physics_dt,
         fixedPointScale: params.fixedPointScale
     };
 
@@ -349,7 +355,7 @@ async function initSimulation() {
     const setup = mpm.setupMpmDomain(device, {
         particleCount,
         gridSize,
-        iterations: params.iterations,
+        iterations: iterations, // Use calculated sub-steps
         posVelBuffer,
         interactionBuffer,
         constants

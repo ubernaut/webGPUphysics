@@ -29,7 +29,8 @@ export function createBlockParticleData(options) {
     materialId = 0,
     mass = 1.0,
     temperature = 273.0,
-    phase = 1
+    phase = 1,
+    restDensity = 4.0
   } = options;
   if (!count || !gridSize) throw new Error("count and gridSize are required");
 
@@ -48,7 +49,8 @@ export function createBlockParticleData(options) {
         views.velocity.set([0, 0, 0]);
         views.phase[0] = phase;
         views.mass[0] = mass;
-        views.volume[0] = 1.0; // will be recomputed in P2G2
+        // Initial volume V0 = mass / rest_density.
+        views.volume[0] = mass / restDensity; 
         views.temperature[0] = temperature;
         views.F.set(identity3());
         views.C.fill(0);

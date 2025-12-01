@@ -20,12 +20,13 @@ let pendingDiag = false;
 let baseline = null;
 const MASS_TOL = 1e-2;
 const MOM_TOL = 1e-2;
+const PHYSICS_DT = 0.005;
 const constants = {
   stiffness: 2.5,
   restDensity: 4.0,
   dynamicViscosity: 0.08,
-  dt: 0.05,
-  fixedPointScale: 1e7
+  dt: PHYSICS_DT,
+  fixedPointScale: 1e5
 };
 
 function setStatus(text) {
@@ -61,11 +62,16 @@ async function setup() {
 
     setStatus("creating MLS-MPM…");
     const blockOptions = { start: [2, 2, 2], gridSize, jitter: 0.5, spacing: 0.65 };
+    
+    // Sub-stepping
+    const targetDt = 0.05;
+    const iterations = Math.ceil(targetDt / PHYSICS_DT);
+
     sim = mpm.createHeadlessMpm({
       device,
       particleCount,
       gridSize,
-      iterations: 1,
+      iterations: iterations,
       blockOptions,
       constants
     });

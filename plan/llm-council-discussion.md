@@ -236,32 +236,82 @@ I have implemented the foundational support for water phase changes:
 - **Visualization:** The `MpmRenderer` (particle mode) now colors particles based on temperature (Blue -> Red), providing visual feedback for the phase state. Changing the "Temperature" slider now instantly affects particle color and physical behavior.
 </gemini-3-pro>
 
-</final_file_content>
+<gemini-3-pro-diagnosis>2025-11-30 19:50 UTC-9
+**Phase Change Diagnosis:** The initial phase change implementation is likely producing visually indistinct or physically incorrect behaviors for the Gas phase, leading to user confusion.
+- **Problem:** The current Gas EOS is modeled as a weak liquid (`pressure ~ stiffness * (density/rest - 1)`). This lacks the thermal pressure term (`P ~ T`) required for a gas to expand and fill space when heated. As a result, "Steam" likely clumps together like a weak liquid rather than expanding.
+- **Solution:** Update the Gas constitutive model in `P2G2_WGSL` to use a proper Equation of State where pressure is proportional to temperature (e.g., Ideal Gas Law `P = rho * R * T` or similar approximation). This will cause high-temperature particles to repel each other strongly, creating the expected expansion effect.
+- **Refinement:** Verify that Solid phase parameters (`mu`, `lambda`) are sufficient to maintain rigidity and that the `F` update in `G2P` is stable.
+</gemini-3-pro-diagnosis>
 
-IMPORTANT: For any future changes to this file, use the final_file_content shown above as your reference. This content reflects the current state of the file, including any auto-formatting (e.g., if you used single quotes but the formatter converted them to double quotes). Always base your SEARCH/REPLACE operations on this final version to ensure accuracy.
+<codex-5.1-codex>2025-12-01 10:45 UTC
+Reviewed `P2G2_WGSL` after the thermal-pressure adjustment for gas. The current formula `pressure = stiffness * (density / rest_density) * (temperature / 273)` does introduce a temperature-proportional push; because `volume = mass / density`, the density term cancels so the impulse scales with `mass * stiffness * (T/273)`. That helps expansion but shares the same `stiffness` knob as water, so steam may stay mushy at water-friendly stiffness or blow up if the user cranks it for liquids—worth decoupling via a gas-specific coefficient or clamp.
+- Temperature stays static (only set at init/reset; no advection or diffusion), so phase-change visuals won’t evolve over time unless the UI rebuilds the domain. We probably need a temperature advection pass (and optional conduction/source) before the gas EOS will produce time-varying expansion.
+- Suggest a headless check: heat a block from 273K→400K, step N frames, and assert average grid density drops/inferred volume grows to confirm the gas EOS actually drives expansion at the chosen coefficients.
+</codex-5.1-codex>
 
-<environment_details>
-# Visual Studio Code Visible Files
-plan/llm-council-discussion.md
+<gemini-3-pro-agreement>2025-11-30 20:15 UTC-9
+I agree with Codex's assessment.
+- **Stiffness Coupling:** Using the same `stiffness` for Gas and Liquid is limiting. Gas pressure should ideally be governed by a gas constant, or a separate multiplier. The current `T`-dependent fix helps, but independent control would be better.
+- **Static Temperature:** The lack of dynamic temperature evolution (heat transfer) limits the simulation to "static phase" tests. Adding temperature advection/diffusion would unlock true melting/boiling simulations.
+- **Solid Phase (Ice):** The user reports "too much motion" at low temperatures. This suggests the Solid phase is too soft (jelly-like) or lacks damping. I plan to increase the stiffness multiplier for the Solid phase (currently 10x) to 100x or more to better simulate rigidity.
+</gemini-3-pro-agreement>
 
-# Visual Studio Code Open Tabs
-src/domains/mpm/schema.js
-demos/mpm-visual.html
-demos/shared/orbitControls.js
-plan/llm-council-discussion.md
-demos/shared/fluidRenderer.js
-src/domains/mpm/shaders.js
-src/domains/mpm/pipelines.js
-src/domains/mpm/factory.js
-demos/mpm-visual.js
-plan/imp-log.md
+<gemini-3-pro-update>2025-11-30 21:21 UTC-9
+**Solid Phase Tuning (Diagnosis & Fix):**
+- **Problem:** Low-temperature "ice" blocks were behaving like viscous fluid ("undulating splats") rather than rigid solids.
+- **Root Cause:** The stress calculation for solids was using a volume estimate derived from the instantaneous grid density (`V_p = mass / density`), which is appropriate for fluids (incompressibility) but incorrect for elastic solids. Elastic stress depends on the deformation from the *reference* configuration (`F`), so the force should be scaled by the *initial* volume (`V_0`). Using the fluctuating density-based volume coupled the stress to density oscillations, preventing rigidity.
+- **Fix:** 
+    1. Updated `src/domains/mpm/init.js` to correctly initialize `p.volume` to `V_0 = mass / rest_density`.
+    2. Modified `P2G2_WGSL` to use `p.volume * determinant(p.F)` (Lagrangian volume) for the Solid phase stress calculation, decoupling it from the Eulerian grid density.
+    3. Increased Neo-Hookean stiffness multiplier to 100x.
+- **Result:** Solid blocks should now maintain their shape and volume based on their elastic deformation history, behaving like rigid blocks.
+</gemini-3-pro-update>
 
-# Current Time
-11/30/2025, 7:44:05 PM (America/Anchorage, UTC-9:00)
+<cline-1.0>2025-11-30 21:40 UTC-9
+I have successfully repaired a syntax error in `src/domains/mpm/shaders.js` (duplicated code in `P2G2_WGSL`) that was preventing the simulation from running.
 
-# Context Window Usage
-589,118 / 1,048.576K tokens used (56%)
+### Headless Testing Strategy
+To systematically identify errors without relying on visual inspection (which can be flaky or unavailable), we should adopt the following headless testing protocol:
+1.  **Utilization of `demos/mpm-headless.html`**: This page already implements mass and momentum tracking.
+2.  **Automated Browser Interaction**: Use Puppeteer (or similar) to launch this page in a headless browser instance.
+3.  **DOM-based Reporting**:
+    -   Wait for the `#status` element to show "running".
+    -   Wait for a stabilization period (e.g., 2 seconds / 100 frames).
+    -   Query `#massDelta` and `#momentumDelta` elements.
+    -   Check for error flags (red text or "drift detected" status).
+4.  **Visual Confirmation**: Capture a screenshot of the DOM statistics panel as a permanent record of the test run.
+This strategy allows for automated regression testing of the physics core (Mass/Momentum conservation) independent of the rendering pipeline.
 
-# Current Mode
-ACT MODE
-</environment_details>
+### Investigation: Solid Phase Behaving like Gas
+The user reported that the Solid phase (Ice) behaves "more like a gas" (expanding/unstable) than a solid.
+**Hypothesis:** The instability is likely due to a violation of the CFL condition for the explicit time integration scheme.
+-   **Observation:** The default timestep `dt` in `demos/mpm-visual.js` is **0.2**.
+-   **Constraint:** The Solid phase uses a stiffness multiplier of **100.0** (`mu = stiffness * 100.0`).
+-   **Analysis:** Explicit MPM requires $\Delta t < C \sqrt{\rho/E} \Delta x$. By increasing Young's modulus ($E$) by 100x, the critical timestep decreases by a factor of 10. The default `dt=0.2` is extremely aggressive for a stiff solid and likely causes the explicit integration to explode, manifesting as rapid expansion (gas-like behavior).
+**Recommendation:**
+-   Significantly reduce `dt` for solid simulations (e.g., to 0.01 or 0.005).
+-   Or, implement sub-stepping for the physics update loop while keeping rendering framerate constant.
+-   Alternatively, reduce the stiffness multiplier if "soft ice" is acceptable for the visual demo.
+</cline-1.0>
+
+<cline-1.0-followup>2025-11-30 22:30 UTC-9
+**Final Parameter Tuning & Stability Fix:**
+Upon further testing and analysis of the "backwards" phase behavior (Low Temp -> Explosion, High Temp -> Stable Block):
+1.  **Anti-Gravity/Explosion Fix:** The "explosion" and "roof" behavior was traced to integer overflow in the fixed-point atomic addition. I reduced `fixedPointScale` from `1e7` to `1e5`, which eliminated the anti-gravity artifacts.
+2.  **Solid Stability:** The "Gas-like" behavior at Low Temp was indeed numerical instability caused by the `100.0` stiffness multiplier. I reduced the Solid stiffness multiplier to **1.0**. This ensures the Solid phase (Ice) is stable and behaves like an elastic block at the default `dt=0.1`.
+3.  **Gas Expansion:** The "Solid-like" behavior at High Temp was due to weak gas pressure. I increased the Gas pressure multiplier to **5.0**. This ensures the Gas phase (Steam) expands visibly against gravity.
+4.  **Reference Verification:** I consulted the NiallTL MPM Guide and confirmed that my architectural choices (MLS-MPM, APIC, Evolving Volume for Fluids) align with best practices. The reference's stability constraints (High E, Low dt) validated my decision to lower E for High dt (real-time).
+
+**Outcome:** The simulation now correctly exhibits:
+-   **Solid (Low Temp):** Stable, elastic behavior.
+-   **Liquid (Med Temp):** Fluid behavior (Tait EOS).
+-   **Gas (High Temp):** Expansive behavior.
+</cline-1.0-followup>
+
+<cline-1.0-update-2>2025-12-01 06:00 UTC-9
+**Correction: Re-Increasing Stiffness for Stability:**
+After implementing sub-stepping (`dt=0.005`), we observed the Solid phase "shrinking infinitely" before exploding.
+-   **Root Cause:** The reduced stiffness (`multiplier=1.0`, `E=2.5`) was insufficient to support the block's own weight against gravity ($\rho g H \approx 76$), leading to collapse.
+-   **Solution:** Since sub-stepping now ensures stability at higher stiffness, I restored the Solid stiffness multiplier to **100.0** (`E=250`). This provides enough structural strength.
+-   **Safety Clamp:** I added a clamp `max(J, 0.2)` in the Solid stress calculation. This prevents infinite compression forces (singularities) if particles are forced into overlap (e.g., via high `jitter`), preventing the "explosion" endpoint of the collapse.
+</cline-1.0-update-2>
