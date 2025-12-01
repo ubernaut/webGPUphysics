@@ -30,10 +30,25 @@ export const MPM_PARTICLE_FIELDS = {
   padding: 152        // 8 bytes padding to align to 160 bytes
 };
 
-export const MPM_GRID_STRIDE = 16; // bytes
+export const MPM_GRID_STRIDE = 32; // bytes (extended for thermal)
 export const MPM_GRID_FIELDS = {
-  velocity: 0, // vec3<f32> encoded as i32 when using fixed-point atomics
-  mass: 12 // f32 encoded as i32 when using fixed-point atomics
+  velocity: 0,    // vec3<f32> encoded as i32 when using fixed-point atomics (vx, vy, vz)
+  mass: 12,       // f32 encoded as i32 when using fixed-point atomics
+  temperature: 16, // f32 encoded as i32 (weighted by mass) for heat transfer
+  thermalMass: 20, // f32 encoded as i32 - mass accumulator for temperature averaging
+  heatSource: 24,  // f32 - external heat flux (from interactions)
+  padding: 28      // 4 bytes padding to 32B alignment
+};
+
+// Thermal constants
+export const THERMAL_CONSTANTS = {
+  diffusivity: 0.1,      // Heat diffusion rate (α)
+  // Latent heats (J/kg, scaled down for simulation)
+  latentHeatMelt: 334.0, // Ice → Water
+  latentHeatBoil: 2260.0, // Water → Steam
+  specificHeat: 4.186,   // Water specific heat (scaled)
+  meltingPoint: 273.0,   // Kelvin
+  boilingPoint: 373.0    // Kelvin
 };
 
 // Baseline constants (from WebGPU-Ocean MLS-MPM)
@@ -78,7 +93,8 @@ export const DEFAULT_SIMULATION_CONSTANTS = {
   subSteps: 4,               // Physics sub-steps per frame
   fixedPointScale: MPM_FIXED_POINT_SCALE,
   tensileStrength: 10.0,     // For brittle fracture
-  damageRate: 2.0            // Damage accumulation rate
+  damageRate: 2.0,           // Damage accumulation rate
+  thermalDiffusivity: 0.05   // Heat diffusion rate (lower = slower spread)
 };
 
 export function particleBufferSize(particleCount) {

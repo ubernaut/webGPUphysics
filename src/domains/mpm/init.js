@@ -201,41 +201,91 @@ export function createRubberBlockData(options) {
 
 /**
  * Create mixed material scene with multiple blocks
+ * Options:
+ * - totalCount: total particle count to use
+ * - gridSize: {x, y, z}
+ * - spacing, jitter, restDensity: defaults
+ * OR
+ * - blocks: array of block definitions
  */
 export function createMixedMaterialData(options) {
-  const { gridSize, blocks } = options;
+  const { gridSize, blocks, totalCount, spacing = 0.65, jitter = 0.0, restDensity = 1.0 } = options;
   
-  // Calculate total particle count
-  let totalCount = 0;
-  for (const block of blocks) {
-    totalCount += block.count;
+  // If blocks are provided, use them directly
+  if (blocks && blocks.length > 0) {
+    let total = 0;
+    for (const block of blocks) {
+      total += block.count;
+    }
+    
+    const buf = new ArrayBuffer(particleBufferSize(total));
+    let offset = 0;
+    
+    for (const block of blocks) {
+      const blockBuf = createBlockParticleData({
+        count: block.count,
+        gridSize,
+        start: block.start,
+        spacing: block.spacing ?? spacing,
+        jitter: block.jitter ?? jitter,
+        materialType: block.materialType ?? MATERIAL_TYPE.LIQUID,
+        mass: block.mass ?? 1.0,
+        temperature: block.temperature ?? 300.0,
+        mu: block.mu,
+        lambda: block.lambda,
+        restDensity: block.restDensity ?? restDensity
+      });
+      
+      const src = new Uint8Array(blockBuf);
+      const dst = new Uint8Array(buf, offset * MPM_PARTICLE_STRIDE);
+      dst.set(src.subarray(0, block.count * MPM_PARTICLE_STRIDE));
+      
+      offset += block.count;
+    }
+    
+    return buf;
   }
   
-  const buf = new ArrayBuffer(particleBufferSize(totalCount));
-  let offset = 0;
+  // Simple interface: create ice cube above water pool
+  // Split particles ~40% ice, ~60% water
+  const iceCount = Math.floor(totalCount * 0.4);
+  const waterCount = totalCount - iceCount;
   
-  for (const block of blocks) {
-    const blockBuf = createBlockParticleData({
-      count: block.count,
-      gridSize,
-      start: block.start,
-      spacing: block.spacing ?? 0.65,
-      jitter: block.jitter ?? 0.0,
-      materialType: block.materialType ?? MATERIAL_TYPE.LIQUID,
-      mass: block.mass ?? 1.0,
-      temperature: block.temperature ?? 300.0,
-      mu: block.mu,
-      lambda: block.lambda,
-      restDensity: block.restDensity ?? 1.0
-    });
-    
-    // Copy block data into main buffer
-    const src = new Uint8Array(blockBuf);
-    const dst = new Uint8Array(buf, offset * MPM_PARTICLE_STRIDE);
-    dst.set(src.subarray(0, block.count * MPM_PARTICLE_STRIDE));
-    
-    offset += block.count;
-  }
+  // Water: lower pool
+  const waterBlocks = [{
+    count: waterCount,
+    start: [2, 2, 2],
+    spacing,
+    jitter,
+    materialType: MATERIAL_TYPE.LIQUID,
+    temperature: 300.0,  // Room temperature
+    restDensity
+  }];
   
-  return buf;
+  // Ice: upper cube (elevated)
+  const iceStart = [
+    gridSize.x * 0.25,  // Centered-ish
+    gridSize.y * 0.4,    // Above water
+    gridSize.z * 0.25
+  ];
+  waterBlocks.push({
+    count: iceCount,
+    start: iceStart,
+    spacing,
+    jitter: jitter * 0.5,  // Less jitter for solid
+    materialType: MATERIAL_TYPE.BRITTLE_SOLID,
+    temperature: 260.0,  // Below freezing
+    mu: MATERIAL_PRESETS.ice.mu,
+    lambda: MATERIAL_PRESETS.ice.lambda,
+    restDensity: 0.92  // Ice is less dense than water
+  });
+  
+  // Create with blocks
+  return createMixedMaterialData({
+    gridSize,
+    blocks: waterBlocks,
+    spacing,
+    jitter,
+    restDensity
+  });
 }

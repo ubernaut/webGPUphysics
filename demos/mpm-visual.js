@@ -43,6 +43,9 @@ const params = {
   materialType: 2, // 0=Ice, 1=Rubber, 2=Water, 3=Steam
   temperature: 300.0,
   
+  // Scene presets
+  sceneType: 'single', // 'single' or 'mixed'
+  
   // Physics
   dt: 0.1,
   stiffness: 50.0,
@@ -67,6 +70,9 @@ const params = {
   interactionY: 0,
   interactionZ: 32,
   interactionActive: true,
+  
+  // Thermal interaction (heat source sphere)
+  heatSourceTemp: 0,  // 0 = no thermal effect, >0 = heat source temperature
 };
 
 toggleBtn.addEventListener("click", () => {
@@ -384,8 +390,21 @@ async function initSimulation() {
         constants
     });
 
-    // Initialize particles with material type
-    const data = mpm.createBlockParticleData({ count: particleCount, gridSize, ...blockOptions });
+    // Initialize particles based on scene type
+    let data;
+    if (params.sceneType === 'mixed') {
+        // Mixed scene: Ice block above water pool
+        data = mpm.createMixedMaterialData({
+            totalCount: particleCount,
+            gridSize,
+            spacing: params.spacing,
+            jitter: params.jitter,
+            restDensity: params.restDensity
+        });
+    } else {
+        // Single material
+        data = mpm.createBlockParticleData({ count: particleCount, gridSize, ...blockOptions });
+    }
     mpm.uploadParticleData(device, setup.buffers.particleBuffer, data);
 
     domain = setup.domain;
@@ -445,7 +464,11 @@ async function setup() {
     const simFolder = gui.addFolder("Simulation");
     simFolder.add(params, "particleCount", 100, 800000, 1000).name("Particle Count").onFinishChange(initSimulation);
     
-    // Material Type Selection
+    // Scene Type Selection
+    const sceneOptions = { 'Single Material': 'single', 'Ice + Water': 'mixed' };
+    simFolder.add(params, "sceneType", sceneOptions).name("Scene Type").onChange(initSimulation);
+    
+    // Material Type Selection (for single material mode)
     const materialOptions = { 'Ice (Brittle)': 0, 'Rubber (Elastic)': 1, 'Water (Liquid)': 2, 'Steam (Gas)': 3 };
     simFolder.add(params, "materialType", materialOptions).name("Material Type").onChange((val) => {
         // Update defaults based on material
@@ -503,6 +526,7 @@ async function setup() {
     interactFolder.add(params, "interactionX", 0, 100).name("X");
     interactFolder.add(params, "interactionY", 0, 100).name("Y");
     interactFolder.add(params, "interactionZ", 0, 100).name("Z");
+    interactFolder.add(params, "heatSourceTemp", 0, 500, 10).name("Heat Source (K)");
     
     gui.add({ reset: initSimulation }, "reset").name("Reset Simulation");
     gui.add({ calibrate: () => initialOrientation = null }, "calibrate").name("Calibrate Sensors");
@@ -624,13 +648,20 @@ async function setup() {
       }
 
       // Update Interaction Buffer
+      // MouseInteraction struct: point(vec3f), radius(f32), velocity(vec3f), temperature(f32)
       if (buffers && buffers.interactionBuffer) {
           const iData = new Float32Array(8);
           if (params.interactionActive) {
-              iData.set([params.interactionX, params.interactionY, params.interactionZ], 0);
+              iData[0] = params.interactionX;
+              iData[1] = params.interactionY;
+              iData[2] = params.interactionZ;
               iData[3] = params.interactionRadius;
+              iData[4] = 0;  // velocity x (unused for now)
+              iData[5] = 0;  // velocity y
+              iData[6] = 0;  // velocity z
+              iData[7] = params.heatSourceTemp;  // Heat source temperature
           } else {
-              iData[3] = -1.0;
+              iData[3] = -1.0;  // Negative radius = inactive
           }
           device.queue.writeBuffer(buffers.interactionBuffer, 0, iData);
       }

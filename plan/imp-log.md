@@ -75,3 +75,63 @@ Implemented a constitutive model dispatch system where all materials use the sam
 - `plan/imp-arch.md` - Added constitutive model architecture
 - `plan/imp-plan.md` - Revised 10-phase implementation plan
 - `plan/llm-council-discussion.md` - Added analysis and resolution
+
+## [2025-12-01] Thermal Diffusion System (Phase 5)
+
+### Problem Statement
+Temperature was static after initialization - particles didn't exchange heat with neighbors, and there was no way to add/remove thermal energy (heat sources, cooling boundaries).
+
+### Solution: Grid-Based Thermal Transfer
+
+Implemented heat transfer via the MPM grid, following the same P2G/G2P pattern as momentum transfer.
+
+### Key Changes
+
+**1. Extended Grid Structure (schema.js)** - 32 bytes per cell
+- `temperature` (i32 fixed-point): Mass-weighted temperature accumulator
+- `thermalMass` (i32 fixed-point): Mass accumulator for temperature averaging
+- `heatSource` (i32 fixed-point): External heat flux from interactions
+- `THERMAL_CONSTANTS`: Diffusivity, latent heats, specific heat
+
+**2. Temperature Scatter (P2G1 shader)**
+- Each particle scatters `mass * temperature` to nearby grid cells
+- Uses same quadratic B-spline weights as momentum transfer
+
+**3. Temperature Gather (G2P shader)**
+- Particles gather temperature from grid (mass-weighted average)
+- Blended with current particle temperature for smoothing
+
+**4. Phase Transitions with Latent Heat (G2P shader)**
+- Melting (Ice→Water): Absorbs latent heat, delays temperature rise
+- Freezing (Water→Ice): Releases latent heat, delays temperature drop
+- Boiling (Water→Steam): High latent heat barrier
+- Condensing (Steam→Water): Same in reverse
+- Material type and properties update automatically on phase change
+
+**5. Heat Source Interaction (G2P shader)**
+- Interaction sphere can now have a temperature
+- Particles within sphere are heated/cooled toward sphere temperature
+- `mouse.temperature` field in MouseInteraction struct
+
+**6. Demo Updates (mpm-visual.js)**
+- "Heat Source (K)" slider in Interaction Sphere folder
+- Set to 0 for no thermal effect, or 400K to heat, 200K to cool
+
+### Constants Added
+- `thermalDiffusivity: 0.05` in DEFAULT_SIMULATION_CONSTANTS
+- Latent heat constants (scaled for real-time simulation)
+- Phase transition temperatures with hysteresis
+
+### Files Modified
+- `src/domains/mpm/schema.js` - Extended grid to 32 bytes, thermal constants
+- `src/domains/mpm/shaders.js` - All shaders updated for new grid, temperature transfer, latent heat
+- `src/domains/mpm/pipelines.js` - thermal_diffusivity constant
+- `src/domains/mpm/index.js` - Export THERMAL_CONSTANTS and DIFFUSE_TEMPERATURE_WGSL
+- `demos/mpm-visual.js` - Heat source temperature control
+
+### Usage
+1. Start simulation with Ice (260K)
+2. Enable interaction sphere with Heat Source = 400K
+3. Move sphere through particles
+4. Observe particles warming (blue→red) and melting (solid→liquid)
+5. Reduce Heat Source to 200K to freeze them back

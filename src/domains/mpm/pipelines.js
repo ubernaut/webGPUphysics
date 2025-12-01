@@ -8,7 +8,8 @@ import {
   P2G2_WGSL,
   UPDATE_GRID_WGSL,
   G2P_WGSL,
-  COPY_POSITION_WGSL
+  COPY_POSITION_WGSL,
+  DIFFUSE_TEMPERATURE_WGSL
 } from "./shaders.js";
 import { DEFAULT_SIMULATION_CONSTANTS } from "./schema.js";
 
@@ -59,7 +60,8 @@ export function createMpmPipelines(device, constants = DEFAULT_SIMULATION_CONSTA
         module: updateGridModule,
         constants: {
           fixed_point_multiplier: constants.fixedPointScale,
-          dt: constants.dt
+          dt: constants.dt,
+          thermal_diffusivity: constants.thermalDiffusivity ?? 0.1
         }
       }
     }),

@@ -8,6 +8,7 @@ export {
   MPM_FIXED_POINT_SCALE,
   MATERIAL_TYPE,
   MATERIAL_PRESETS,
+  THERMAL_CONSTANTS,
   DEFAULT_SIMULATION_CONSTANTS,
   particleBufferSize,
   gridBufferSize,
@@ -22,7 +23,8 @@ export {
   P2G2_WGSL,
   UPDATE_GRID_WGSL,
   G2P_WGSL,
-  COPY_POSITION_WGSL
+  COPY_POSITION_WGSL,
+  DIFFUSE_TEMPERATURE_WGSL
 } from "./shaders.js";
 export { setupMpmDomain, uploadParticleData } from "./factory.js";
 export {
