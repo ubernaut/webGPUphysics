@@ -10,9 +10,9 @@ import {
   G2P_WGSL,
   COPY_POSITION_WGSL
 } from "./shaders.js";
-import { DEFAULT_WATER_CONSTANTS } from "./schema.js";
+import { DEFAULT_SIMULATION_CONSTANTS } from "./schema.js";
 
-export function createMpmPipelines(device, constants = DEFAULT_WATER_CONSTANTS) {
+export function createMpmPipelines(device, constants = DEFAULT_SIMULATION_CONSTANTS) {
   const clearGridModule = createShaderModule(device, CLEAR_GRID_WGSL, "mpm-clear-grid");
   const p2g1Module = createShaderModule(device, P2G1_WGSL, "mpm-p2g1");
   const p2g2Module = createShaderModule(device, P2G2_WGSL, "mpm-p2g2");
@@ -46,7 +46,9 @@ export function createMpmPipelines(device, constants = DEFAULT_WATER_CONSTANTS) 
           stiffness: constants.stiffness,
           rest_density: constants.restDensity,
           dynamic_viscosity: constants.dynamicViscosity,
-          dt: constants.dt
+          dt: constants.dt,
+          tensile_strength: constants.tensileStrength,
+          damage_rate: constants.damageRate
         }
       }
     }),

@@ -1,6 +1,6 @@
 import {
   MPM_WORKGROUP_SIZE,
-  DEFAULT_WATER_CONSTANTS
+  DEFAULT_SIMULATION_CONSTANTS
 } from "./schema.js";
 
 const ceilDiv = (n, d) => Math.ceil(n / d);
@@ -12,7 +12,7 @@ const ceilDiv = (n, d) => Math.ceil(n / d);
 export class MpmDomain {
   constructor(device, options = {}) {
     this.device = device;
-    this.constants = { ...DEFAULT_WATER_CONSTANTS, ...(options.constants ?? {}) };
+    this.constants = { ...DEFAULT_SIMULATION_CONSTANTS, ...(options.constants ?? {}) };
     this.iterations = options.iterations ?? 1;
     this.pipelines = {};
     this.bindGroups = {};

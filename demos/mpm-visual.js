@@ -28,21 +28,36 @@ let currentParticleCount = 0;
 let initializing = false;
 let initialOrientation = null;
 
+const MATERIAL_NAMES = ['Ice (Brittle)', 'Rubber (Elastic)', 'Water (Liquid)', 'Steam (Gas)'];
+
 const params = {
   renderMode: 'Fluid', // 'Particles' or 'Fluid'
-  particleCount: 30000,
+  particleCount: 300,
   gridSizeX: 64,
   gridSizeY: 64,
   gridSizeZ: 64,
   spacing: 0.65,
   jitter: 0.5,
-  temperature: 273.0,
+  
+  // Material selection
+  materialType: 2, // 0=Ice, 1=Rubber, 2=Water, 3=Steam
+  temperature: 300.0,
+  
+  // Physics
   dt: 0.1,
-  stiffness: 2.5,
-  restDensity: 4.0,
-  dynamicViscosity: 0.08,
+  stiffness: 50.0,
+  restDensity: 1.0,
+  dynamicViscosity: 0.1,
   iterations: 1,
   fixedPointScale: 1e5,
+  
+  // Brittle solid parameters
+  tensileStrength: 10.0,
+  damageRate: 2.0,
+  mu: 1000.0,       // Shear modulus for solids
+  lambda: 1000.0,   // Bulk modulus for solids
+  
+  // Rendering
   visualRadius: 0.2, // For particles
   fluidRadius: 1,   // For fluid (larger for overlap)
   
@@ -318,13 +333,18 @@ async function initSimulation() {
   try {
     const particleCount = params.particleCount;
     const gridSize = { x: params.gridSizeX, y: params.gridSizeY, z: params.gridSizeZ };
+    
+    // Block options with material type
     const blockOptions = { 
         start: [2, 2, 2], 
         gridSize, 
         jitter: params.jitter, 
         spacing: params.spacing,
         temperature: params.temperature,
-        restDensity: params.restDensity
+        restDensity: params.restDensity,
+        materialType: params.materialType,
+        mu: params.mu,
+        lambda: params.lambda
     };
 
     // Sub-stepping for stability
@@ -332,12 +352,15 @@ async function initSimulation() {
     const physics_dt = 0.005;
     const iterations = Math.ceil(params.dt / physics_dt);
 
+    // Constants including brittle solid parameters
     const constants = {
         stiffness: params.stiffness,
         restDensity: params.restDensity,
         dynamicViscosity: params.dynamicViscosity,
         dt: physics_dt,
-        fixedPointScale: params.fixedPointScale
+        fixedPointScale: params.fixedPointScale,
+        tensileStrength: params.tensileStrength,
+        damageRate: params.damageRate
     };
 
     // Create buffers
@@ -361,7 +384,7 @@ async function initSimulation() {
         constants
     });
 
-    // Initialize particles
+    // Initialize particles with material type
     const data = mpm.createBlockParticleData({ count: particleCount, gridSize, ...blockOptions });
     mpm.uploadParticleData(device, setup.buffers.particleBuffer, data);
 
@@ -422,6 +445,36 @@ async function setup() {
     const simFolder = gui.addFolder("Simulation");
     simFolder.add(params, "particleCount", 100, 800000, 1000).name("Particle Count").onFinishChange(initSimulation);
     
+    // Material Type Selection
+    const materialOptions = { 'Ice (Brittle)': 0, 'Rubber (Elastic)': 1, 'Water (Liquid)': 2, 'Steam (Gas)': 3 };
+    simFolder.add(params, "materialType", materialOptions).name("Material Type").onChange((val) => {
+        // Update defaults based on material
+        switch (parseInt(val)) {
+            case 0: // Ice
+                params.temperature = 260;
+                params.mu = 1000;
+                params.lambda = 1000;
+                params.stiffness = 50;
+                break;
+            case 1: // Rubber
+                params.temperature = 300;
+                params.mu = 10;
+                params.lambda = 100;
+                params.stiffness = 50;
+                break;
+            case 2: // Water
+                params.temperature = 300;
+                params.stiffness = 50;
+                break;
+            case 3: // Steam
+                params.temperature = 400;
+                params.stiffness = 50;
+                break;
+        }
+        gui.controllersRecursive().forEach(c => c.updateDisplay());
+        initSimulation();
+    });
+    
     // Box Size
     simFolder.add(params, "gridSizeX", 16, 256, 16).name("Box X").onFinishChange(initSimulation);
     simFolder.add(params, "gridSizeY", 16, 256, 16).name("Box Y").onFinishChange(initSimulation);
@@ -433,9 +486,16 @@ async function setup() {
     
     const physFolder = gui.addFolder("Physics Constants");
     physFolder.add(params, "dt", 0.001, 0.2, 0.001).name("Time Step (dt)").onChange(() => initSimulation());
-    physFolder.add(params, "stiffness", 0.1, 50.0, 0.1).onFinishChange(initSimulation);
+    physFolder.add(params, "stiffness", 0.1, 100.0, 0.1).name("Stiffness").onFinishChange(initSimulation);
     physFolder.add(params, "restDensity", 0.1, 10.0, 0.1).onFinishChange(initSimulation);
     physFolder.add(params, "dynamicViscosity", 0.0, 5.0, 0.01).onFinishChange(initSimulation);
+    
+    // Solid material parameters
+    const solidFolder = gui.addFolder("Solid Properties");
+    solidFolder.add(params, "mu", 1, 5000, 10).name("Shear Modulus (μ)").onFinishChange(initSimulation);
+    solidFolder.add(params, "lambda", 1, 5000, 10).name("Bulk Modulus (λ)").onFinishChange(initSimulation);
+    solidFolder.add(params, "tensileStrength", 0.1, 100, 0.5).name("Tensile Strength").onFinishChange(initSimulation);
+    solidFolder.add(params, "damageRate", 0.1, 10, 0.1).name("Damage Rate").onFinishChange(initSimulation);
     
     const interactFolder = gui.addFolder("Interaction Sphere");
     interactFolder.add(params, "interactionActive").name("Active");

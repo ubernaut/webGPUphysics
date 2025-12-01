@@ -66,6 +66,138 @@ Dense grid for MLS-MPM.
   - Thermal conductivity, heat capacity.
   - Phase transition temperatures and latent heat.
 
+### Extended Particle Buffer for Multi-Material Support (160 bytes/particle)
+To support brittle crystalline solids, granular materials, and proper phase transitions:
+
+| Field | Type | Offset (bytes) | Notes |
+|-------|------|----------------|-------|
+| `position` | `vec3<f32>` | 0 | xyz position |
+| `material_type` | `u32` | 12 | Enum: BRITTLE_SOLID, ELASTIC_SOLID, LIQUID, GAS, GRANULAR |
+| `velocity` | `vec3<f32>` | 16 | xyz velocity |
+| `phase` | `u32` | 28 | 0=solid, 1=liquid, 2=gas (for phase-changing materials) |
+| `mass` | `f32` | 32 | per-particle mass |
+| `volume0` | `f32` | 36 | **Initial** volume (reference configuration) |
+| `temperature` | `f32` | 40 | Kelvin |
+| `damage` | `f32` | 44 | Fracture state [0,1] for brittle materials |
+| `F` (DefGrad) | `mat3x3<f32>` | 48 | Deformation Gradient (48 bytes with alignment) |
+| `C` (Affine) | `mat3x3<f32>` | 96 | APIC Affine Matrix (48 bytes with alignment) |
+| `mu` | `f32` | 144 | Per-particle shear modulus (can vary) |
+| `lambda` | `f32` | 148 | Per-particle bulk modulus |
+| `padding` | `vec2<f32>` | 152 | Align to 160 bytes |
+
+## Constitutive Model Architecture
+
+The key insight for unified multi-material simulation: **all materials use the same MPM loop, only stress computation differs**.
+
+### Constitutive Model Dispatch System
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    MPM SIMULATION LOOP                  │
+│                                                         │
+│  1. Clear Grid                                          │
+│  2. Particles → Grid (P2G transfer)                     │
+│  3. Grid velocity update (forces, boundaries)           │
+│  4. Grid → Particles (G2P transfer)                     │
+│  5. Update particle positions                           │
+│  6. ★ Compute stress using CONSTITUTIVE MODEL ★         │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────┐
+│              CONSTITUTIVE MODEL DISPATCH                │
+│                  (per particle material_type)           │
+│                                                         │
+│  BRITTLE_SOLID (ice/glass):                            │
+│    - Linear Elastic stress: σ = λ·tr(ε)·I + 2μ·ε       │
+│    - Small strain: ε = (F + Fᵀ)/2 - I                  │
+│    - Principal stress fracture criterion               │
+│    - Damage accumulation: d += rate when σ > strength  │
+│    - Damaged particles → reduced stiffness or fluid    │
+│                                                         │
+│  ELASTIC_SOLID (rubber):                               │
+│    - Neo-Hookean: τ = μ(F·Fᵀ - I) + λ·J·(J-1)·I       │
+│    - Corotational variant for stability                │
+│                                                         │
+│  GRANULAR (sand/snow):                                 │
+│    - Drucker-Prager elastoplasticity                   │
+│    - Friction angle, cohesion parameters               │
+│    - Hardening/softening based on plastic strain       │
+│                                                         │
+│  LIQUID (water):                                       │
+│    - Tait EOS: P = B·((ρ/ρ₀)^γ - 1)                   │
+│    - Stress: σ = -P·I (isotropic pressure only)        │
+│    - Optional viscosity: σ += μ·(∇v + ∇vᵀ)            │
+│                                                         │
+│  GAS (steam/air):                                      │
+│    - Ideal Gas: P = ρRT or P ∝ ρ·T                    │
+│    - Very low viscosity                                │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Brittle Solid (Ice) Implementation Strategy
+
+Ice and other crystalline solids require special handling that differs from Neo-Hookean:
+
+1. **Linear Elastic Model** (valid for small strains before fracture):
+   ```wgsl
+   // Small strain tensor (valid when deformation is small)
+   let eps = 0.5 * (F + transpose(F)) - mat3x3f(1,0,0, 0,1,0, 0,0,1);
+   
+   // Linear elastic stress
+   let trace_eps = eps[0][0] + eps[1][1] + eps[2][2];
+   let stress = lambda * trace_eps * I + 2.0 * mu * eps;
+   ```
+
+2. **Principal Stress Fracture**:
+   ```wgsl
+   // Compute principal stresses via eigenvalue analysis
+   let principal_stresses = eigenvalues(stress);
+   let max_principal = max(principal_stresses);
+   
+   // Fracture criterion: tensile strength exceeded
+   if (max_principal > tensile_strength) {
+       damage += damage_rate * dt;
+       damage = min(damage, 1.0);
+   }
+   
+   // Apply damage to stiffness
+   let effective_mu = mu * (1.0 - damage);
+   let effective_lambda = lambda * (1.0 - damage);
+   ```
+
+3. **Phase Transition on Full Damage**:
+   ```wgsl
+   if (damage >= 1.0) {
+       material_type = LIQUID;  // Shattered ice becomes water
+       F = mat3x3f(1,0,0, 0,1,0, 0,0,1);  // Reset deformation gradient
+   }
+   ```
+
+### Material Property Reference Values
+
+| Material | E (GPa) | ν | Tensile Strength (MPa) | Notes |
+|----------|---------|---|------------------------|-------|
+| Ice | 9-10 | 0.33 | 0.7-3.0 | Brittle, crystalline |
+| Glass | 50-90 | 0.22 | 20-170 | Very brittle |
+| Rubber | 0.001-0.1 | 0.49 | N/A | Hyperelastic |
+| Steel | 200 | 0.30 | 250-2000 | Ductile yield |
+| Water | N/A | N/A | N/A | Bulk modulus ~2.2 GPa |
+
+### Stability Considerations for Stiff Materials
+
+1. **CFL Condition**: `dt < C * sqrt(ρ/E) * dx`
+   - For ice (E=10 GPa, ρ=920 kg/m³, dx=0.01m): dt_crit ≈ 3μs
+   - **Implication**: Either use implicit integration or accept unrealistically soft "ice"
+
+2. **Practical Approaches**:
+   - **Sub-stepping**: Multiple physics steps per render frame
+   - **Implicit Integration**: Solve `(I - dt²·K)·v = b` for velocity
+   - **Softened Parameters**: Use E/1000 for visual "ice" that's stable
+   - **Hybrid Solver**: Switch to rigid body/constraint solver when phase=solid
+
 ## Compute Pipelines (MPM Sequence)
 
 1.  **Clear Grid:** Zero out mass/momentum grid buffers.

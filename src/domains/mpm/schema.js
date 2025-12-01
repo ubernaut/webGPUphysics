@@ -1,20 +1,33 @@
 // MLS-MPM buffer schema and helpers.
 // Layout is designed for peercompute compatibility: explicit offsets/strides, 16-byte alignment.
 
-export const MPM_PARTICLE_STRIDE = 144; // bytes
+// Material type enum (stored as u32)
+export const MATERIAL_TYPE = {
+  BRITTLE_SOLID: 0,   // Ice, glass - linear elastic + fracture
+  ELASTIC_SOLID: 1,   // Rubber - Neo-Hookean
+  LIQUID: 2,          // Water - Tait EOS
+  GAS: 3,             // Steam - Ideal Gas
+  GRANULAR: 4         // Sand, snow - Drucker-Prager (future)
+};
+
+export const MPM_PARTICLE_STRIDE = 160; // bytes (extended for multi-material)
 
 // Offsets are in bytes relative to the start of the particle.
+// Note: mat3x3f requires 48 bytes (3 columns × 16B alignment) in WGSL std430 layout
 export const MPM_PARTICLE_FIELDS = {
-  position: 0, // vec3<f32> (12B) + padding
-  materialId: 12, // f32 (store int as float to keep alignment simple)
-  velocity: 16, // vec3<f32> (12B) + padding
-  phase: 28, // f32 (0=solid,1=liquid,2=gas)
-  mass: 32, // f32
-  volume: 36, // f32
-  temperature: 40, // f32
-  padding0: 44, // f32 reserved/padding
-  F: 48, // mat3x3<f32> (48B: 3 columns * 16B alignment)
-  C: 96 // mat3x3<f32> (48B: 3 columns * 16B alignment)
+  position: 0,        // vec3<f32> (12B)
+  materialType: 12,   // u32 (4B) - material behavior type (BRITTLE_SOLID, etc.)
+  velocity: 16,       // vec3<f32> (12B)
+  phase: 28,          // u32 (4B) - current phase (0=solid, 1=liquid, 2=gas)
+  mass: 32,           // f32 (4B)
+  volume0: 36,        // f32 (4B) - initial/reference volume
+  temperature: 40,    // f32 (4B)
+  damage: 44,         // f32 (4B) - fracture damage [0,1] for brittle materials
+  F: 48,              // mat3x3<f32> (48B: 3 columns × 16B alignment)
+  C: 96,              // mat3x3<f32> (48B: 3 columns × 16B alignment)
+  mu: 144,            // f32 (4B) - per-particle shear modulus
+  lambda: 148,        // f32 (4B) - per-particle bulk modulus
+  padding: 152        // 8 bytes padding to align to 160 bytes
 };
 
 export const MPM_GRID_STRIDE = 16; // bytes
@@ -25,14 +38,47 @@ export const MPM_GRID_FIELDS = {
 
 // Baseline constants (from WebGPU-Ocean MLS-MPM)
 export const MPM_WORKGROUP_SIZE = 64;
-export const MPM_FIXED_POINT_SCALE = 1e7; // prototype scale for fixed-point atomics
+export const MPM_FIXED_POINT_SCALE = 1e5; // reduced from 1e7 to prevent overflow
 
-export const DEFAULT_WATER_CONSTANTS = {
-  stiffness: 3.0,
-  restDensity: 4.0,
+// Material property presets
+export const MATERIAL_PRESETS = {
+  ice: {
+    materialType: MATERIAL_TYPE.BRITTLE_SOLID,
+    // Real ice: E ≈ 9 GPa, but we use softened values for stability
+    // E = 2μ(1+ν) ≈ 2.5 * mu for ν ≈ 0.25
+    mu: 1000.0,              // Shear modulus (softened for real-time)
+    lambda: 1000.0,          // Bulk modulus
+    tensileStrength: 10.0,   // Fracture threshold
+    damageRate: 2.0,         // How fast damage accumulates
+    restDensity: 0.92        // Ice is less dense than water
+  },
+  water: {
+    materialType: MATERIAL_TYPE.LIQUID,
+    stiffness: 50.0,         // Bulk modulus for Tait EOS
+    restDensity: 1.0,
+    viscosity: 0.1
+  },
+  steam: {
+    materialType: MATERIAL_TYPE.GAS,
+    gasConstant: 5.0,        // Pressure multiplier
+    restDensity: 0.01        // Very low density
+  },
+  rubber: {
+    materialType: MATERIAL_TYPE.ELASTIC_SOLID,
+    mu: 10.0,                // Soft shear modulus
+    lambda: 100.0            // Bulk modulus
+  }
+};
+
+export const DEFAULT_SIMULATION_CONSTANTS = {
+  stiffness: 50.0,           // Base stiffness for fluids
+  restDensity: 1.0,
   dynamicViscosity: 0.1,
-  dt: 0.2,
-  fixedPointScale: MPM_FIXED_POINT_SCALE
+  dt: 0.1,                   // Timestep (requires sub-stepping for stiff solids)
+  subSteps: 4,               // Physics sub-steps per frame
+  fixedPointScale: MPM_FIXED_POINT_SCALE,
+  tensileStrength: 10.0,     // For brittle fracture
+  damageRate: 2.0            // Damage accumulation rate
 };
 
 export function particleBufferSize(particleCount) {
@@ -49,14 +95,17 @@ export function particleViews(buffer, index = 0) {
   const base = index * MPM_PARTICLE_STRIDE;
   return {
     position: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.position, 3),
-    materialId: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.materialId, 1),
+    materialType: new Uint32Array(buffer, base + MPM_PARTICLE_FIELDS.materialType, 1),
     velocity: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.velocity, 3),
-    phase: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.phase, 1),
+    phase: new Uint32Array(buffer, base + MPM_PARTICLE_FIELDS.phase, 1),
     mass: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.mass, 1),
-    volume: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.volume, 1),
+    volume0: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.volume0, 1),
     temperature: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.temperature, 1),
-    F: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.F, 9),
-    C: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.C, 9)
+    damage: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.damage, 1),
+    F: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.F, 12), // 3 columns × 4 floats (padded)
+    C: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.C, 12), // 3 columns × 4 floats (padded)
+    mu: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.mu, 1),
+    lambda: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.lambda, 1)
   };
 }
 

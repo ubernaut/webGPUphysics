@@ -6,7 +6,9 @@ export {
   MPM_GRID_FIELDS,
   MPM_WORKGROUP_SIZE,
   MPM_FIXED_POINT_SCALE,
-  DEFAULT_WATER_CONSTANTS,
+  MATERIAL_TYPE,
+  MATERIAL_PRESETS,
+  DEFAULT_SIMULATION_CONSTANTS,
   particleBufferSize,
   gridBufferSize,
   particleViews,
@@ -23,6 +25,13 @@ export {
   COPY_POSITION_WGSL
 } from "./shaders.js";
 export { setupMpmDomain, uploadParticleData } from "./factory.js";
-export { createBlockParticleData } from "./init.js";
+export {
+  createBlockParticleData,
+  createIceBlockData,
+  createWaterBlockData,
+  createSteamBlockData,
+  createRubberBlockData,
+  createMixedMaterialData
+} from "./init.js";
 export { createHeadlessMpm } from "./headless.js";
 export { computeMassMomentum } from "./diagnostics.js";

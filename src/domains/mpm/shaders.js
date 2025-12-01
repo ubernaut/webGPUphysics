@@ -1,12 +1,68 @@
-// WGSL shader sources for MLS-MPM (baseline adapted from WebGPU-Ocean).
+// WGSL shader sources for MLS-MPM (multi-material constitutive framework).
+// Supports: BRITTLE_SOLID (linear elastic + fracture), ELASTIC_SOLID (Neo-Hookean),
+//           LIQUID (Tait EOS), GAS (Ideal Gas), GRANULAR (Drucker-Prager - future)
 
-export const CLEAR_GRID_WGSL = /* wgsl */ `
+// Material type constants (must match schema.js MATERIAL_TYPE enum)
+const MATERIAL_CONSTANTS = /* wgsl */ `
+const MATERIAL_BRITTLE_SOLID: u32 = 0u;
+const MATERIAL_ELASTIC_SOLID: u32 = 1u;
+const MATERIAL_LIQUID: u32 = 2u;
+const MATERIAL_GAS: u32 = 3u;
+const MATERIAL_GRANULAR: u32 = 4u;
+`;
+
+// Common particle struct (160 bytes, matches schema.js)
+const PARTICLE_STRUCT = /* wgsl */ `
+struct Particle {
+  position: vec3f,
+  materialType: u32,      // BRITTLE_SOLID, ELASTIC_SOLID, LIQUID, GAS, GRANULAR
+  velocity: vec3f,
+  phase: u32,             // Current phase: 0=solid, 1=liquid, 2=gas
+  mass: f32,
+  volume0: f32,           // Initial/reference volume
+  temperature: f32,
+  damage: f32,            // Fracture damage [0,1] for brittle materials
+  F: mat3x3f,             // Deformation gradient
+  C: mat3x3f,             // APIC affine matrix
+  mu: f32,                // Per-particle shear modulus
+  lambda: f32,            // Per-particle bulk modulus
+  _pad0: f32,
+  _pad1: f32,
+};
+`;
+
+const CELL_STRUCT = /* wgsl */ `
 struct Cell {
   vx: i32,
   vy: i32,
   vz: i32,
   mass: i32,
 };
+`;
+
+const CELL_ATOMIC_STRUCT = /* wgsl */ `
+struct CellAtomic {
+  vx: atomic<i32>,
+  vy: atomic<i32>,
+  vz: atomic<i32>,
+  mass: atomic<i32>,
+};
+`;
+
+const FIXED_POINT_HELPERS = /* wgsl */ `
+override fixed_point_multiplier: f32;
+
+fn encodeFixedPoint(f: f32) -> i32 {
+  return i32(f * fixed_point_multiplier);
+}
+
+fn decodeFixedPoint(v: i32) -> f32 {
+  return f32(v) / fixed_point_multiplier;
+}
+`;
+
+export const CLEAR_GRID_WGSL = /* wgsl */ `
+${CELL_STRUCT}
 
 @group(0) @binding(0) var<storage, read_write> cells: array<Cell>;
 
@@ -22,33 +78,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 `;
 
 export const P2G1_WGSL = /* wgsl */ `
-struct Particle {
-  position: vec3f,
-  materialId: f32,
-  velocity: vec3f,
-  phase: f32,
-  mass: f32,
-  volume: f32,
-  temperature: f32,
-  pad0: f32,
-  F: mat3x3f,
-  C: mat3x3f,
-};
-struct Cell {
+${MATERIAL_CONSTANTS}
+${PARTICLE_STRUCT}
+
+struct CellAtomic {
   vx: atomic<i32>,
   vy: atomic<i32>,
   vz: atomic<i32>,
   mass: atomic<i32>,
 };
 
-override fixed_point_multiplier: f32;
-
-fn encodeFixedPoint(f: f32) -> i32 {
-  return i32(f * fixed_point_multiplier);
-}
+${FIXED_POINT_HELPERS}
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
-@group(0) @binding(1) var<storage, read_write> cells: array<Cell>;
+@group(0) @binding(1) var<storage, read_write> cells: array<CellAtomic>;
 @group(0) @binding(2) var<uniform> init_box_size: vec3f;
 
 @compute @workgroup_size(64)
@@ -96,46 +139,69 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 `;
 
 export const P2G2_WGSL = /* wgsl */ `
-struct Particle {
-  position: vec3f,
-  materialId: f32,
-  velocity: vec3f,
-  phase: f32,
-  mass: f32,
-  volume: f32,
-  temperature: f32,
-  pad0: f32,
-  F: mat3x3f,
-  C: mat3x3f,
-};
-struct Cell {
+${MATERIAL_CONSTANTS}
+${PARTICLE_STRUCT}
+
+struct CellAtomic {
   vx: atomic<i32>,
   vy: atomic<i32>,
   vz: atomic<i32>,
   mass: i32,
 };
 
-override fixed_point_multiplier: f32;
+${FIXED_POINT_HELPERS}
+
 override stiffness: f32;
 override rest_density: f32;
 override dynamic_viscosity: f32;
 override dt: f32;
+override tensile_strength: f32;
+override damage_rate: f32;
 
-fn encodeFixedPoint(f: f32) -> i32 {
-  return i32(f * fixed_point_multiplier);
-}
-fn decodeFixedPoint(v: i32) -> f32 {
-  return f32(v) / fixed_point_multiplier;
-}
-
-@group(0) @binding(0) var<storage, read> particles: array<Particle>;
-@group(0) @binding(1) var<storage, read_write> cells: array<Cell>;
+@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+@group(0) @binding(1) var<storage, read_write> cells: array<CellAtomic>;
 @group(0) @binding(2) var<uniform> init_box_size: vec3f;
+
+// Compute eigenvalues of a symmetric 3x3 matrix (for principal stresses)
+// Using analytical solution for symmetric matrices
+fn eigenvalues_symmetric(m: mat3x3f) -> vec3f {
+  let a = m[0][0]; let b = m[1][1]; let c = m[2][2];
+  let d = m[0][1]; let e = m[1][2]; let f = m[0][2];
+  
+  let p1 = d*d + e*e + f*f;
+  
+  if (p1 < 1e-10) {
+    // Matrix is diagonal
+    return vec3f(a, b, c);
+  }
+  
+  let q = (a + b + c) / 3.0;
+  let p2 = (a - q)*(a - q) + (b - q)*(b - q) + (c - q)*(c - q) + 2.0*p1;
+  let p = sqrt(p2 / 6.0);
+  
+  // B = (1/p) * (A - q*I)
+  let B00 = (a - q) / p; let B11 = (b - q) / p; let B22 = (c - q) / p;
+  let B01 = d / p; let B12 = e / p; let B02 = f / p;
+  
+  // det(B) / 2
+  let r = 0.5 * (B00 * (B11*B22 - B12*B12) - B01 * (B01*B22 - B12*B02) + B02 * (B01*B12 - B11*B02));
+  
+  // Clamp r to [-1, 1] for numerical stability
+  let r_clamped = clamp(r, -1.0, 1.0);
+  let phi = acos(r_clamped) / 3.0;
+  
+  // Eigenvalues
+  let eig0 = q + 2.0 * p * cos(phi);
+  let eig2 = q + 2.0 * p * cos(phi + 2.0 * 3.14159265359 / 3.0);
+  let eig1 = 3.0 * q - eig0 - eig2;
+  
+  return vec3f(eig0, eig1, eig2);
+}
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= arrayLength(&particles)) { return; }
-  let p = particles[id.x];
+  var p = particles[id.x];
   var weights: array<vec3f, 3>;
 
   let cell_idx = floor(p.position);
@@ -144,6 +210,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   weights[1] = 0.75 - cell_diff * cell_diff;
   weights[2] = 0.5 * (0.5 + cell_diff) * (0.5 + cell_diff);
 
+  // Gather density from grid
   var density = 0.0;
   for (var gx = 0; gx < 3; gx++) {
     for (var gy = 0; gy < 3; gy++) {
@@ -163,69 +230,128 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
   }
 
-  // Phase 0: Solid (Ice) - Neo-Hookean Elasticity
-  // Phase 1: Liquid (Water) - Tait EOS + Viscosity
-  // Phase 2: Gas (Steam) - Ideal Gas EOS
-  
+  // ==========================================
+  // CONSTITUTIVE MODEL DISPATCH
+  // ==========================================
   var stress = mat3x3f(vec3f(0.), vec3f(0.), vec3f(0.));
   var volume: f32;
+  let I = mat3x3f(vec3f(1,0,0), vec3f(0,1,0), vec3f(0,0,1));
 
-  if (p.phase < 0.5) { // Solid
-     // For solids, use Lagrangian volume: V = V0 * det(F)
-     // p.volume stores V0 (initial volume)
-     let F = p.F;
-     let J = determinant(F);
-     volume = p.volume * J;
-
-     // Neo-Hookean
-     // mu, lambda from stiffness
-     // Solids need much higher stiffness than fluids to hold shape against gravity/impact
-     let mu = stiffness * 100.0; 
-     let lambda = stiffness * 100.0;
-     
-     // Simple Neo-Hookean: 
-     // P = mu * (F - F^-T) + lambda * log(J) * F^-T
-     // Stress = (1/J) * P * F^T
-     // Stress = (mu/J) * (F*F^T - I) + (lambda/J) * log(J) * I
-     
-     // Approximate if F is close to I?
-     // Let's use Corotated or simple approach.
-     // For now, let's stick to a simpler elastic model or just high viscosity fluid?
-     // No, need elasticity.
-     
-     // Let's calculate F*F^T
-     let FFT = F * transpose(F);
-     let I = mat3x3f(vec3f(1,0,0), vec3f(0,1,0), vec3f(0,0,1));
-     
-     // Clamp J to prevent infinite compression instability (especially with high jitter)
-     let clampedJ = max(J, 0.2); 
-     stress = (mu / clampedJ) * (FFT - I) + (lambda / clampedJ) * log(clampedJ) * I;
-  } else {
-     // For fluids/gas, use Eulerian volume from grid density
-     volume = p.mass / max(density, 1e-6);
-     
-     if (p.phase < 1.5) { // Liquid
-        let pressure = max(-0.0, stiffness * (pow(density / rest_density, 5.0) - 1.0));
-        stress = mat3x3f(
-        vec3f(-pressure, 0.0, 0.0),
-        vec3f(0.0, -pressure, 0.0),
-        vec3f(0.0, 0.0, -pressure)
-     );
-        let dudv = p.C;
-        let strain = dudv + transpose(dudv);
-        stress += dynamic_viscosity * strain;
-     } else { // Gas
-        // Ideal Gas-like EOS: P ~ density * temperature
-        // Boost pressure to ensure visual expansion against gravity
-        let pressure = stiffness * 5.0 * (density / rest_density) * (p.temperature / 273.0);
-        stress = mat3x3f(
-            vec3f(-pressure, 0.0, 0.0),
-            vec3f(0.0, -pressure, 0.0),
-            vec3f(0.0, 0.0, -pressure)
-        );
-     }
+  switch (p.materialType) {
+    // ----------------------------------------
+    // BRITTLE SOLID (Ice, Glass)
+    // Linear Elastic + Fracture
+    // ----------------------------------------
+    case MATERIAL_BRITTLE_SOLID: {
+      let F = p.F;
+      let J = determinant(F);
+      volume = p.volume0 * max(J, 0.1);
+      
+      // Small strain tensor: ε = (F + F^T)/2 - I
+      let eps = 0.5 * (F + transpose(F)) - I;
+      
+      // Apply damage to material properties
+      let effective_mu = p.mu * (1.0 - p.damage);
+      let effective_lambda = p.lambda * (1.0 - p.damage);
+      
+      // Linear elastic stress: σ = λ·tr(ε)·I + 2μ·ε
+      let trace_eps = eps[0][0] + eps[1][1] + eps[2][2];
+      stress = effective_lambda * trace_eps * I + 2.0 * effective_mu * eps;
+      
+      // Principal stress fracture criterion
+      // Compute principal stresses (eigenvalues of stress tensor)
+      let principal = eigenvalues_symmetric(stress);
+      let max_principal = max(max(principal.x, principal.y), principal.z);
+      
+      // Accumulate damage if tensile strength exceeded
+      if (max_principal > tensile_strength && p.damage < 1.0) {
+        let new_damage = p.damage + damage_rate * dt;
+        p.damage = min(new_damage, 1.0);
+      }
+      
+      break;
+    }
+    
+    // ----------------------------------------
+    // ELASTIC SOLID (Rubber)
+    // Neo-Hookean
+    // ----------------------------------------
+    case MATERIAL_ELASTIC_SOLID: {
+      let F = p.F;
+      let J = determinant(F);
+      let clampedJ = max(J, 0.1);
+      volume = p.volume0 * clampedJ;
+      
+      // Neo-Hookean: σ = (μ/J)(FF^T - I) + (λ/J)ln(J)I
+      let FFT = F * transpose(F);
+      stress = (p.mu / clampedJ) * (FFT - I) + (p.lambda / clampedJ) * log(clampedJ) * I;
+      
+      break;
+    }
+    
+    // ----------------------------------------
+    // LIQUID (Water)
+    // Tait Equation of State + Viscosity
+    // ----------------------------------------
+    case MATERIAL_LIQUID: {
+      // Eulerian volume from grid density
+      volume = p.mass / max(density, 1e-6);
+      
+      // Tait EOS: P = B * ((ρ/ρ₀)^γ - 1)
+      let pressure = max(0.0, stiffness * (pow(density / rest_density, 7.0) - 1.0));
+      stress = -pressure * I;
+      
+      // Viscosity: σ += μ·(∇v + ∇v^T)
+      let strain_rate = p.C + transpose(p.C);
+      stress += dynamic_viscosity * strain_rate;
+      
+      break;
+    }
+    
+    // ----------------------------------------
+    // GAS (Steam, Air)
+    // Ideal Gas Law: P = ρRT
+    // ----------------------------------------
+    case MATERIAL_GAS: {
+      // Eulerian volume from grid density
+      volume = p.mass / max(density, 1e-8);
+      
+      // Ideal Gas: P ∝ ρ * T
+      // Using temperature-proportional pressure for expansion
+      let pressure = stiffness * 5.0 * (density / rest_density) * (p.temperature / 273.0);
+      stress = -pressure * I;
+      
+      break;
+    }
+    
+    // ----------------------------------------
+    // GRANULAR (Sand, Snow) - Future
+    // Drucker-Prager
+    // ----------------------------------------
+    case MATERIAL_GRANULAR: {
+      // TODO: Implement Drucker-Prager elastoplasticity
+      // For now, treat as elastic solid
+      let F = p.F;
+      let J = determinant(F);
+      volume = p.volume0 * max(J, 0.1);
+      
+      let FFT = F * transpose(F);
+      let clampedJ = max(J, 0.1);
+      stress = (p.mu / clampedJ) * (FFT - I) + (p.lambda / clampedJ) * log(clampedJ) * I;
+      
+      break;
+    }
+    
+    default: {
+      // Unknown material - no stress
+      volume = p.mass / max(density, 1e-6);
+    }
   }
 
+  // Write back updated particle (damage may have changed)
+  particles[id.x] = p;
+
+  // Apply stress to grid
   let factor = -volume * 4.0 * stress * dt;
 
   for (var gx = 0; gx < 3; gx++) {
@@ -253,32 +379,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 `;
 
 export const UPDATE_GRID_WGSL = /* wgsl */ `
-struct Cell {
-  vx: i32,
-  vy: i32,
-  vz: i32,
-  mass: i32,
-};
+${CELL_STRUCT}
 
 struct SimulationUniforms {
     gravity: vec3f,
     pad: f32,
 };
 
-override fixed_point_multiplier: f32;
+${FIXED_POINT_HELPERS}
 override dt: f32;
 
 @group(0) @binding(0) var<storage, read_write> cells: array<Cell>;
 @group(0) @binding(1) var<uniform> real_box_size: vec3f;
 @group(0) @binding(2) var<uniform> init_box_size: vec3f;
 @group(0) @binding(3) var<uniform> sim_uniforms: SimulationUniforms;
-
-fn encodeFixedPoint(f: f32) -> i32 {
-  return i32(f * fixed_point_multiplier);
-}
-fn decodeFixedPoint(v: i32) -> f32 {
-  return f32(v) / fixed_point_multiplier;
-}
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -310,33 +424,18 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 `;
 
 export const G2P_WGSL = /* wgsl */ `
-struct Particle {
-  position: vec3f,
-  materialId: f32,
-  velocity: vec3f,
-  phase: f32,
-  mass: f32,
-  volume: f32,
-  temperature: f32,
-  pad0: f32,
-  F: mat3x3f,
-  C: mat3x3f,
-};
-struct Cell {
-  vx: i32,
-  vy: i32,
-  vz: i32,
-  mass: i32,
-};
+${MATERIAL_CONSTANTS}
+${PARTICLE_STRUCT}
+${CELL_STRUCT}
 
 struct MouseInteraction {
   point: vec3f,
-  radius: f32, // if <= 0, disabled
-  pad0: vec3f, // padding to 32 bytes?
+  radius: f32,
+  pad0: vec3f,
   pad1: f32,
 };
 
-override fixed_point_multiplier: f32;
+${FIXED_POINT_HELPERS}
 override dt: f32;
 
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
@@ -344,10 +443,6 @@ override dt: f32;
 @group(0) @binding(2) var<uniform> real_box_size: vec3f;
 @group(0) @binding(3) var<uniform> init_box_size: vec3f;
 @group(0) @binding(4) var<uniform> mouse: MouseInteraction;
-
-fn decodeFixedPoint(v: i32) -> f32 {
-  return f32(v) / fixed_point_multiplier;
-}
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -398,32 +493,74 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
   p.C = B * 4.0;
   
-  // Update Deformation Gradient (Elasticity)
-  // F_new = (I + dt * C) * F
   let I = mat3x3f(vec3f(1,0,0), vec3f(0,1,0), vec3f(0,0,1));
-  p.F = (I + dt * p.C) * p.F;
   
-  // Phase Logic
-  // Simple Temp Thresholds
-  if (p.temperature < 273.0) {
-     p.phase = 0.0; // Ice
-     // Maybe harden?
-  } else if (p.temperature > 373.0) {
-     p.phase = 2.0; // Steam
-  } else {
-     p.phase = 1.0; // Water
+  // ==========================================
+  // DEFORMATION GRADIENT UPDATE
+  // ==========================================
+  
+  // Update F based on material type
+  switch (p.materialType) {
+    case MATERIAL_BRITTLE_SOLID, MATERIAL_ELASTIC_SOLID, MATERIAL_GRANULAR: {
+      // Solids: Evolve deformation gradient
+      // F_new = (I + dt * C) * F
+      p.F = (I + dt * p.C) * p.F;
+      
+      // For brittle solids with full damage, convert to liquid
+      if (p.materialType == MATERIAL_BRITTLE_SOLID && p.damage >= 1.0) {
+        p.materialType = MATERIAL_LIQUID;
+        p.phase = 1u;  // Liquid phase
+        p.F = I;       // Reset deformation gradient
+        p.damage = 0.0;
+      }
+      
+      break;
+    }
+    
+    case MATERIAL_LIQUID, MATERIAL_GAS: {
+      // Fluids: Reset F to identity (no elastic memory)
+      p.F = I;
+      break;
+    }
+    
+    default: {
+      p.F = I;
+    }
   }
   
-  // Plasticity/Fracture handling for solids?
-  if (p.phase < 0.5) {
-     // Clamp F to avoid infinite stretching?
-     // Simple plasticity: if determinant(F) is too wild, reset it?
-     // Or Clamp singular values.
-  } else {
-     // Fluid/Gas: Reset F to Identity to avoid elastic memory
-     p.F = I;
+  // ==========================================
+  // PHASE TRANSITIONS (Temperature-based)
+  // ==========================================
+  
+  // Only apply phase transitions to materials that support it
+  // (LIQUID, GAS, or fully damaged BRITTLE_SOLID)
+  if (p.materialType == MATERIAL_LIQUID || p.materialType == MATERIAL_GAS) {
+    // Hysteresis to prevent oscillation
+    if (p.temperature < 271.0 && p.phase != 0u) {
+      // Freeze: become ice
+      p.phase = 0u;
+      p.materialType = MATERIAL_BRITTLE_SOLID;
+      p.damage = 0.0;
+      // Set ice material properties
+      p.mu = 1000.0;
+      p.lambda = 1000.0;
+    } else if (p.temperature > 375.0 && p.phase != 2u) {
+      // Boil: become steam
+      p.phase = 2u;
+      p.materialType = MATERIAL_GAS;
+      p.F = I;
+    } else if (p.temperature >= 273.0 && p.temperature <= 373.0 && p.phase != 1u) {
+      // Liquid range
+      p.phase = 1u;
+      p.materialType = MATERIAL_LIQUID;
+      p.F = I;
+    }
   }
 
+  // ==========================================
+  // POSITION UPDATE & BOUNDARY CONDITIONS
+  // ==========================================
+  
   p.position += p.velocity * dt;
   p.position = vec3f(
     clamp(p.position.x, 1.0, real_box_size.x - 2.0),
@@ -431,6 +568,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     clamp(p.position.z, 1.0, real_box_size.z - 2.0)
   );
 
+  // Soft wall boundaries
   let k = 3.0;
   let wall_stiffness = 0.3;
   let wall_min = vec3f(3.0);
@@ -450,19 +588,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (dist < mouse.radius) {
       let normal = normalize(diff);
       let penetration = mouse.radius - dist;
-      // Push out
       p.position += normal * penetration;
       
-      // Reflect velocity? Or just push?
-      // Simple bounce:
       let v_dot_n = dot(p.velocity, normal);
       if (v_dot_n < 0.0) {
-        p.velocity -= 1.5 * v_dot_n * normal; // 1.5 restitution?
+        p.velocity -= 1.5 * v_dot_n * normal;
       }
-      
-      // Friction?
-      // let tangent = p.velocity - dot(p.velocity, normal) * normal;
-      // p.velocity -= tangent * 0.1;
     }
   }
 
@@ -471,30 +602,26 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 `;
 
 export const COPY_POSITION_WGSL = /* wgsl */ `
-struct Particle {
+${MATERIAL_CONSTANTS}
+${PARTICLE_STRUCT}
+
+struct PosVelData {
   position: vec3f,
-  materialId: f32,
+  pad0: f32,             // Alignment padding
   velocity: vec3f,
-  phase: f32,
-  mass: f32,
-  volume: f32,
-  temperature: f32,
-  pad0: f32,
-  F: mat3x3f,
-  C: mat3x3f,
-};
-struct PosVel {
-  position: vec3f,
-  velocity: vec3f,
+  temperature: f32,      // For rendering coloring
 };
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
-@group(0) @binding(1) var<storage, read_write> posvel: array<PosVel>;
+@group(0) @binding(1) var<storage, read_write> posvel: array<PosVelData>;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= arrayLength(&particles)) { return; }
-  posvel[id.x].position = particles[id.x].position;
-  posvel[id.x].velocity = particles[id.x].velocity;
+  let p = particles[id.x];
+  posvel[id.x].position = p.position;
+  posvel[id.x].pad0 = 0.0;
+  posvel[id.x].velocity = p.velocity;
+  posvel[id.x].temperature = p.temperature;
 }
 `;

@@ -315,3 +315,331 @@ After implementing sub-stepping (`dt=0.005`), we observed the Solid phase "shrin
 -   **Solution:** Since sub-stepping now ensures stability at higher stiffness, I restored the Solid stiffness multiplier to **100.0** (`E=250`). This provides enough structural strength.
 -   **Safety Clamp:** I added a clamp `max(J, 0.2)` in the Solid stress calculation. This prevents infinite compression forces (singularities) if particles are forced into overlap (e.g., via high `jitter`), preventing the "explosion" endpoint of the collapse.
 </cline-1.0-update-2>
+
+<claude-opus-4-5-analysis>2025-12-01 09:37 UTC-9
+
+## Deep Analysis: Why Ice Behavior is Fundamentally Broken in MLS-MPM
+
+I've reviewed the council discussion, reference material (NiallTL MPM guide), and the current shader implementation. The solid (ice) phase has exhibited a parade of pathological behaviors throughout development:
+
+1. "Undulating splats" - behaving like viscous fluid
+2. "Gas-like" expansion when temperature is low (inverted physics)
+3. "Settle and explode" numerical instability
+4. "Shrinking infinitely before exploding" with sub-stepping
+5. Oscillating between "too soft" (jelly) and "too stiff" (explosion)
+
+The council has been playing whack-a-mole with parameters (stiffness 1x→100x→1x→100x, fixed-point scale 1e7→1e5, dt 0.2→0.1→0.005, J clamping). This suggests a **fundamental architectural mismatch**, not a tuning problem.
+
+---
+
+### Core Thesis: MLS-MPM is Architecturally Hostile to Crystalline Solids
+
+MLS-MPM was designed for fluids. The council is attempting to graft Neo-Hookean elasticity onto a fluid-optimized framework, and the architecture resists at every level.
+
+---
+
+### Issue 1: Continuous F Evolution Creates Numerical Drift
+
+In `G2P_WGSL`:
+```wgsl
+p.F = (I + dt * p.C) * p.F;
+```
+
+This multiplicatively accumulates the deformation gradient every frame. For fluids (where F resets to I), this is fine. For solids, this accumulates numerical error indefinitely. The NiallTL guide explicitly states elastic solids work by tracking deformation from a **reference configuration** - but this implementation has no mechanism to establish or return to a reference state.
+
+**The F matrix will drift from physical reality over thousands of frames, even with perfect numerics.**
+
+---
+
+### Issue 2: Schizophrenic Volume Calculation
+
+`P2G2_WGSL` uses different volume calculations per phase:
+- **Solid:** `volume = p.volume * J` (Lagrangian - depends on deformation history)
+- **Fluid:** `volume = p.mass / density` (Eulerian - instantaneous grid measurement)
+
+But the solid path relies on `p.volume` initialized as `mass / restDensity`. This is a **density-derived** value, not the **geometric** initial volume. For ice wanting geometric volume preservation, this creates a conceptual mismatch.
+
+The solid stress becomes: `stress ∝ (mass/restDensity) * det(F) * Neo-Hookean(F)`
+
+This couples the constitutive response to an arbitrary density parameter rather than actual particle geometry.
+
+---
+
+### Issue 3: Neo-Hookean is Wrong for Ice
+
+Neo-Hookean elasticity models **rubber-like** materials undergoing large, reversible deformations. Ice is a **brittle crystalline solid**:
+- Minimal deformation before fracture
+- No "bouncy" recovery
+- Failure is catastrophic, not elastic
+
+Cranking stiffness to 100x fights Neo-Hookean's fundamental assumption of large-deformation elasticity. The model predicts stress proportional to `F*F^T - I`, which creates enormous restoring forces at small deformations when stiffness is high.
+
+**Appropriate ice models would use:**
+- Near-rigid behavior (very high stiffness with plastic yield/fracture threshold)
+- Von Mises or Drucker-Prager yield criteria
+- Peridynamics for brittle fracture
+
+---
+
+### Issue 4: APIC Velocity Gradient Corrupts Solid Coherence
+
+The APIC affine momentum matrix `C` is designed to reduce numerical dissipation in **fluid** transfers by preserving angular momentum at each particle. For solids, this creates problems:
+
+- Ice particles should move together rigidly
+- APIC allows each particle independent angular momentum contributions
+- Result: the solid "shimmers" internally with spurious micro-rotations
+
+The `Q = C * dist` term in P2G adds velocity contributions that should be zero for a rigid body but aren't.
+
+---
+
+### Issue 5: Phase Transitions are Discontinuous Step Functions
+
+```wgsl
+if (p.temperature < 273.0) {
+   p.phase = 0.0; // Ice
+} else if (p.temperature > 373.0) {
+   p.phase = 2.0; // Steam
+} else {
+   p.phase = 1.0; // Water
+}
+```
+
+At exactly 273K, particles **instantaneously** switch between fundamentally different constitutive models. This causes:
+- Numerical shock waves at phase boundaries
+- No latent heat absorption during phase change
+- Unstable oscillation if particles hover near threshold temperatures
+- F matrix suddenly becoming meaningful (solid) or meaningless (fluid) with no transition
+
+---
+
+### Issue 6: CFL Condition is Unmanageable
+
+Explicit MPM requires: `dt < C * sqrt(ρ/E) * dx`
+
+With stiffness multiplier 100x on base E=2.5 (so E=250), typical density ρ≈4, and dx≈1:
+```
+dt_crit ≈ 0.1 * sqrt(4/250) * 1 ≈ 0.013
+```
+
+The sub-stepping to dt=0.005 helps but requires 20 sub-steps per frame at dt=0.1. This is:
+- Computationally expensive
+- Still marginal for very stiff materials
+- A sign that explicit integration is wrong for this regime
+
+---
+
+### Issue 7: The J Clamp is a Band-Aid, Not a Fix
+
+```wgsl
+let clampedJ = max(J, 0.2);
+```
+
+This prevents singularities but creates non-physical behavior:
+- Particles can compress to 20% volume with zero resistance
+- The derivative of stress w.r.t. J is discontinuous at J=0.2
+- Creates a "hard floor" that causes bouncing/instability
+
+---
+
+## Recommendations
+
+### Short-term (Make Ice "Work" Visually)
+1. **Don't call it ice.** Call it "cold gel" or "elastic solid." Manage expectations.
+2. **Use very high viscosity fluid** for phase=0 instead of Neo-Hookean. Set `F = I` every frame. This gives "cold honey" behavior that reads as solid-ish without the instability.
+3. **Add phase transition hysteresis.** Don't switch at exactly 273K. Use `ice→water at 275K, water→ice at 271K` to prevent oscillation.
+
+### Medium-term (Actual Solid Support)
+1. **Implement implicit time integration** for the solid phase. This allows arbitrarily stiff materials at any dt.
+2. **Use corotational elasticity** instead of Neo-Hookean. Extract rotation from F via polar decomposition, compute stress from stretch only. More stable for large rotations.
+3. **Add plastic yield.** Clamp singular values of F to prevent extreme deformation before computing stress.
+
+### Long-term (Proper Architecture)
+1. **Don't use MLS-MPM for crystalline solids.** The entire framework is fluid-optimized.
+2. **Hybrid approach:** Use MLS-MPM for liquids/gases, switch to rigid-body solver or PBD constraints when phase=0.
+3. **Peridynamics** for brittle ice fracture if that's actually desired.
+
+---
+
+## Summary Table
+
+| Issue | Root Cause | Current Workaround | Proper Fix |
+|-------|-----------|-------------------|------------|
+| F drift | Multiplicative accumulation | None | Reference configuration tracking |
+| Volume mismatch | Density-derived V0 | Using `p.volume * J` | Geometric volume initialization |
+| Wrong constitutive model | Neo-Hookean for ice | High stiffness | Corotational + yield |
+| APIC noise | Angular momentum per-particle | None | Disable C for solids |
+| Phase discontinuity | Step function threshold | None | Hysteresis + latent heat |
+| CFL violation | Explicit integration | Sub-stepping | Implicit solver |
+| J clamp artifacts | Singularity avoidance | `max(J, 0.2)` | Yield criterion |
+
+The ice behavior isn't strange—it's **predictably dysfunctional** given the architectural choices. The council has been heroically patching symptoms while the disease persists in the foundation.
+
+</claude-opus-4-5-analysis>
+
+<claude-sonnet-4-2025-12-01>2025-12-01 11:12 UTC-9
+
+## Unified Multi-Material MPM Architecture: Resolution and Path Forward
+
+After extensive discussion with the user and review of the council's deliberations, I'm providing a synthesis and actionable plan that addresses the fundamental architectural concerns raised.
+
+### Key Clarifications
+
+**1. MLS-MPM is NOT fluid-specific**
+
+There was confusion in the council about whether MLS-MPM is inherently incompatible with solids. This is incorrect. MLS-MPM (Moving Least Squares MPM) is a mathematical reformulation of the P2G/G2P transfers that works equally well for all material types. The Hu et al. 2018 paper demonstrates both fluid and Neo-Hookean elastic simulations using MLS-MPM.
+
+The issue with ice behavior is **not** MLS-MPM itself—it's the choice of constitutive model (Neo-Hookean) and implementation details.
+
+**2. Neo-Hookean is Wrong for Ice (But Not for All Solids)**
+
+Neo-Hookean models **rubber-like** materials:
+- Large elastic deformation
+- Bouncy, reversible behavior
+- Stress ∝ F·Fᵀ - I
+
+Ice is **brittle crystalline solid**:
+- Minimal deformation before fracture (< 0.1%)
+- No elastic recovery—it shatters
+- Stress should follow linear elasticity until failure
+
+The council was correct that Neo-Hookean is wrong for ice. However, the solution isn't to abandon MLS-MPM—it's to use the appropriate constitutive model.
+
+### The Unified Architecture Solution
+
+**Single MPM loop, multiple constitutive models:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    MPM SIMULATION LOOP                  │
+│  (Same for ALL materials - this is the MLS-MPM core)   │
+│                                                         │
+│  1. Clear Grid                                          │
+│  2. P2G Transfer (particles → grid)                    │
+│  3. Grid Update (apply forces)                         │
+│  4. G2P Transfer (grid → particles)                    │
+│  5. Update positions                                   │
+└─────────────────────────────────────────────────────────┘
+                           │
+         ┌─────────────────┼─────────────────┐
+         ▼                 ▼                 ▼
+   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+   │ BRITTLE     │  │ ELASTIC     │  │ FLUID       │
+   │ (Ice/Glass) │  │ (Rubber)    │  │ (Water)     │
+   │             │  │             │  │             │
+   │ Linear      │  │ Neo-Hookean │  │ Tait EOS    │
+   │ Elastic +   │  │ or          │  │             │
+   │ Fracture    │  │ Corotational│  │ P = B(ρ/ρ₀) │
+   └─────────────┘  └─────────────┘  └─────────────┘
+```
+
+### Ice Implementation Strategy
+
+**Replace Neo-Hookean with Linear Elastic + Fracture:**
+
+1. **Small strain tensor** (valid for ice's minimal deformation):
+   ```
+   ε = (F + Fᵀ)/2 - I
+   ```
+
+2. **Linear elastic stress**:
+   ```
+   σ = λ·tr(ε)·I + 2μ·ε
+   ```
+
+3. **Principal stress fracture criterion**:
+   ```
+   if max_principal_stress > tensile_strength:
+       damage += damage_rate * dt
+   ```
+
+4. **Damage affects stiffness**:
+   ```
+   effective_mu = mu * (1 - damage)
+   ```
+
+5. **Full damage → phase transition**:
+   ```
+   if damage >= 1.0:
+       material_type = LIQUID
+       F = Identity
+   ```
+
+### Why This Works
+
+- **Linear elastic** is computationally simpler than Neo-Hookean
+- Valid for small strains (which is all ice experiences before breaking)
+- **Fracture criterion** gives brittle behavior
+- **Damage system** allows gradual degradation
+- **Phase transition** converts shattered ice to water naturally
+
+### Stability Considerations
+
+The council correctly identified CFL stability issues with stiff materials. The critical timestep scales as:
+```
+dt_crit ∝ sqrt(ρ/E) * dx
+```
+
+For realistic ice (E ≈ 10 GPa), this requires:
+- Either **sub-stepping** (many physics steps per frame)
+- Or **implicit integration** (solving linear systems)
+- Or **softened parameters** (unrealistic but stable "visual ice")
+
+**Recommended approach for real-time demo:** Use softened parameters (E/1000) with fracture criterion. The ice won't be physically accurate, but it will:
+- Maintain shape under moderate stress
+- Fracture visually when overloaded
+- Be numerically stable at reasonable dt
+
+### Per-Particle Material State
+
+Extended particle buffer (160 bytes):
+```
+struct Particle {
+    position: vec3f,
+    material_type: u32,    // BRITTLE, ELASTIC, LIQUID, GAS
+    velocity: vec3f,
+    phase: u32,            // For phase-changing materials
+    mass: f32,
+    volume0: f32,          // Reference configuration volume
+    temperature: f32,
+    damage: f32,           // [0,1] for brittle materials
+    F: mat3x3f,            // Deformation gradient
+    C: mat3x3f,            // APIC affine matrix
+    mu: f32,               // Per-particle shear modulus
+    lambda: f32,           // Per-particle bulk modulus
+}
+```
+
+### Updated Implementation Plan
+
+I have updated `imp-plan.md` and `imp-arch.md` with:
+
+1. **Phase 4: Multi-Material Constitutive Framework** - The architectural key
+2. **Phase 5: Brittle Solid (Ice)** - Linear elastic + fracture
+3. **Phase 6: Gas** - Ideal gas EOS
+4. **Phase 7: Granular** - Drucker-Prager (optional)
+5. **Phase 8: Phase Transitions** - Temperature-driven with hysteresis
+
+The critical insight: **Phase 4 is the lynchpin.** Once the constitutive dispatch framework exists, adding new material types is incremental shader work.
+
+### Response to Council Concerns
+
+| Concern | Resolution |
+|---------|------------|
+| "MLS-MPM is fluid-optimized" | Incorrect—MLS is transfer math, works for all materials |
+| "F accumulates numerical drift" | True for solids; use reference configuration tracking |
+| "Neo-Hookean wrong for ice" | Correct—switch to linear elastic + fracture |
+| "APIC causes solid noise" | Consider disabling C for rigid-ish solids (optional) |
+| "Phase transitions discontinuous" | Add hysteresis bands, not step functions |
+| "CFL violation with stiff materials" | Sub-stepping or softened parameters |
+
+### Conclusion
+
+The unified MPM architecture is sound. The ice problems stem from:
+1. Wrong constitutive model (Neo-Hookean instead of linear elastic + fracture)
+2. Missing damage/fracture system
+3. CFL violation with high stiffness
+
+The fix is **not** to abandon MLS-MPM but to implement proper constitutive models for each material type within the existing framework.
+
+</claude-sonnet-4-2025-12-01>
