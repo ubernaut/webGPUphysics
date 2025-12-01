@@ -209,12 +209,18 @@ struct Cell {
   mass: i32,
 };
 
+struct SimulationUniforms {
+    gravity: vec3f,
+    pad: f32,
+};
+
 override fixed_point_multiplier: f32;
 override dt: f32;
 
 @group(0) @binding(0) var<storage, read_write> cells: array<Cell>;
 @group(0) @binding(1) var<uniform> real_box_size: vec3f;
 @group(0) @binding(2) var<uniform> init_box_size: vec3f;
+@group(0) @binding(3) var<uniform> sim_uniforms: SimulationUniforms;
 
 fn encodeFixedPoint(f: f32) -> i32 {
   return i32(f * fixed_point_multiplier);
@@ -234,8 +240,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     decodeFixedPoint(cells[id.x].vz)
   );
   v /= decodeFixedPoint(cells[id.x].mass);
+  
+  // Apply gravity
+  v += sim_uniforms.gravity * dt;
+
   cells[id.x].vx = encodeFixedPoint(v.x);
-  cells[id.x].vy = encodeFixedPoint(v.y + (-0.3 * dt));
+  cells[id.x].vy = encodeFixedPoint(v.y);
   cells[id.x].vz = encodeFixedPoint(v.z);
 
   let x: i32 = i32(id.x) / i32(init_box_size.z) / i32(init_box_size.y);
@@ -268,6 +278,13 @@ struct Cell {
   mass: i32,
 };
 
+struct MouseInteraction {
+  point: vec3f,
+  radius: f32, // if <= 0, disabled
+  pad0: vec3f, // padding to 32 bytes?
+  pad1: f32,
+};
+
 override fixed_point_multiplier: f32;
 override dt: f32;
 
@@ -275,6 +292,7 @@ override dt: f32;
 @group(0) @binding(1) var<storage, read> cells: array<Cell>;
 @group(0) @binding(2) var<uniform> real_box_size: vec3f;
 @group(0) @binding(3) var<uniform> init_box_size: vec3f;
+@group(0) @binding(4) var<uniform> mouse: MouseInteraction;
 
 fn decodeFixedPoint(v: i32) -> f32 {
   return f32(v) / fixed_point_multiplier;
@@ -346,6 +364,29 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (x_n.y > wall_max.y) { p.velocity.y += wall_stiffness * (wall_max.y - x_n.y); }
   if (x_n.z < wall_min.z) { p.velocity.z += wall_stiffness * (wall_min.z - x_n.z); }
   if (x_n.z > wall_max.z) { p.velocity.z += wall_stiffness * (wall_max.z - x_n.z); }
+
+  // Sphere interaction
+  if (mouse.radius > 0.0) {
+    let diff = p.position - mouse.point;
+    let dist = length(diff);
+    if (dist < mouse.radius) {
+      let normal = normalize(diff);
+      let penetration = mouse.radius - dist;
+      // Push out
+      p.position += normal * penetration;
+      
+      // Reflect velocity? Or just push?
+      // Simple bounce:
+      let v_dot_n = dot(p.velocity, normal);
+      if (v_dot_n < 0.0) {
+        p.velocity -= 1.5 * v_dot_n * normal; // 1.5 restitution?
+      }
+      
+      // Friction?
+      // let tangent = p.velocity - dot(p.velocity, normal) * normal;
+      // p.velocity -= tangent * 0.1;
+    }
+  }
 
   particles[id.x] = p;
 }

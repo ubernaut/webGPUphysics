@@ -5,7 +5,7 @@ class OrbitCamera {
     this.target = opts.target || [0, 0.5, 0];
     this.radius = opts.radius || 14;
     this.minRadius = opts.minRadius || 2;
-    this.maxRadius = opts.maxRadius || 200; // Increased
+    this.maxRadius = opts.maxRadius || 800; // Increased
     this.theta = opts.theta || 0; // yaw
     this.phi = opts.phi || Math.PI / 4; // pitch
     this.rotateSpeed = opts.rotateSpeed || 0.005;
@@ -92,7 +92,7 @@ class OrbitCamera {
   getViewProj(aspect) {
     const fov = Math.PI / 4;
     const near = 0.1;
-    const far = 200;
+    const far = 1000;
     const f = 1 / Math.tan(fov / 2);
     const proj = new Float32Array([
       f / aspect, 0, 0, 0,
@@ -114,7 +114,7 @@ class OrbitCamera {
   getMatrices(aspect) {
     const fov = Math.PI / 4;
     const near = 0.1;
-    const far = 200;
+    const far = 1000;
     const f = 1 / Math.tan(fov / 2);
     const proj = new Float32Array([
       f / aspect, 0, 0, 0,

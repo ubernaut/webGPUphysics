@@ -26,6 +26,7 @@ function createVec3UniformBuffer(device, vec3, label) {
  * - particleCount: number of particles
  * - gridSize: { x, y, z } grid dimensions
  * - posVelBuffer: optional buffer for copyPosition output
+ * - interactionBuffer: optional buffer for mouse interaction (MouseInteraction struct)
  * - constants: overrides for water defaults
  * - iterations: how many MLS-MPM iterations per step (default 1)
  */
@@ -34,6 +35,7 @@ export function setupMpmDomain(device, options) {
     particleCount,
     gridSize,
     posVelBuffer,
+    interactionBuffer,
     constants,
     iterations
   } = options;
@@ -45,6 +47,21 @@ export function setupMpmDomain(device, options) {
   const gridBuffer = createGridBuffer(device, gridCount);
   const initBoxBuffer = createVec3UniformBuffer(device, [gridSize.x, gridSize.y, gridSize.z], "mpm-init-box");
   const realBoxBuffer = createVec3UniformBuffer(device, [gridSize.x, gridSize.y, gridSize.z], "mpm-real-box");
+  const simUniformBuffer = createVec3UniformBuffer(device, [0, -0.3, 0], "mpm-sim-uniforms");
+
+  // Default interaction buffer if not provided (radius = -1)
+  let effectiveInteractionBuffer = interactionBuffer;
+  if (!effectiveInteractionBuffer) {
+    effectiveInteractionBuffer = device.createBuffer({
+        size: 32,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        label: 'mpm-interaction-default'
+    });
+    // Write radius = -1
+    const data = new Float32Array(8);
+    data[3] = -1.0;
+    device.queue.writeBuffer(effectiveInteractionBuffer, 0, data);
+  }
 
   const pipelines = createMpmPipelines(device, constants);
   const bindGroups = createMpmBindGroups(device, pipelines, {
@@ -52,6 +69,8 @@ export function setupMpmDomain(device, options) {
     gridBuffer,
     initBoxBuffer,
     realBoxBuffer,
+    simUniformBuffer,
+    interactionBuffer: effectiveInteractionBuffer,
     posVelBuffer
   });
 
@@ -68,6 +87,8 @@ export function setupMpmDomain(device, options) {
       gridBuffer,
       initBoxBuffer,
       realBoxBuffer,
+      simUniformBuffer,
+      interactionBuffer: effectiveInteractionBuffer,
       posVelBuffer
     },
     dispatch: {

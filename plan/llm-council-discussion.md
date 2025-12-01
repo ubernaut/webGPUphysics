@@ -216,4 +216,12 @@ Following the bug fix, I have upgraded `demos/mpm-visual.html` to include a full
 - **Controls:** Parameter tuning (Particle Count, Grid Size, Spacing, Jitter, Time Step, Stiffness, Rest Density, Viscosity) and a "Render Mode" toggle.
 - **Fluid Renderer:** Ported the multi-pass rendering pipeline (Depth -> Bilateral Blur -> Thickness -> Gaussian Blur -> Composition) from WebGPU-Ocean to `demos/shared/fluidRenderer.js`.
 - **Refinement:** Adjusted lighting (brighter background/sky) and default parameters (increased fluid visual radius) to ensure the fluid looks liquid rather than granular or dark. Fixed a validation error during reset by properly managing buffer state transitions.
+
+### Latest Updates: Interaction and Controls
+I have implemented the following requested features:
+- **Sphere Interaction:** Added an interactive sphere collider (drag with Shift+Click). Updated shaders (`G2P`) to handle sphere SDF collision.
+- **Particle Count:** Increased limit to 1,000,000 particles (default 20,000) and optimized buffer initialization safety.
+- **Mobile Controls:** Added `touch-action: none` to canvas to fix orbit control issues on mobile devices.
+- **New Controls:** Added UI sliders for Box Size (Grid Dimensions) and Ambient Temperature.
+- **Large Scene Support:** Increased camera rendering distance (far plane) to 1000 and max radius to 800 to support larger simulations.
 </gemini-3-pro>

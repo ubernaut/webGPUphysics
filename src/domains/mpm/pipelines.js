@@ -89,6 +89,7 @@ export function createMpmPipelines(device, constants = DEFAULT_WATER_CONSTANTS) 
  * - gridBuffer: storage (cells)
  * - initBoxBuffer: uniform vec3 (size padded to 16 bytes)
  * - realBoxBuffer: uniform vec3 (size padded to 16 bytes)
+ * - interactionBuffer: uniform MouseInteraction (32 bytes)
  * - posVelBuffer: storage (optional) for copyPosition
  */
 export function createMpmBindGroups(device, pipelines, buffers) {
@@ -97,6 +98,7 @@ export function createMpmBindGroups(device, pipelines, buffers) {
     gridBuffer,
     initBoxBuffer,
     realBoxBuffer,
+    interactionBuffer,
     posVelBuffer
   } = buffers;
 
@@ -126,7 +128,8 @@ export function createMpmBindGroups(device, pipelines, buffers) {
       entries: [
         { binding: 0, resource: { buffer: gridBuffer } },
         { binding: 1, resource: { buffer: realBoxBuffer } },
-        { binding: 2, resource: { buffer: initBoxBuffer } }
+        { binding: 2, resource: { buffer: initBoxBuffer } },
+        { binding: 3, resource: { buffer: buffers.simUniformBuffer } }
       ]
     }),
     g2p: device.createBindGroup({
@@ -135,7 +138,8 @@ export function createMpmBindGroups(device, pipelines, buffers) {
         { binding: 0, resource: { buffer: particleBuffer } },
         { binding: 1, resource: { buffer: gridBuffer } },
         { binding: 2, resource: { buffer: realBoxBuffer } },
-        { binding: 3, resource: { buffer: initBoxBuffer } }
+        { binding: 3, resource: { buffer: initBoxBuffer } },
+        { binding: 4, resource: { buffer: interactionBuffer } }
       ]
     })
   };

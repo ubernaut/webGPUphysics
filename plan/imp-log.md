@@ -52,20 +52,26 @@ this file contains a concise narrative of the development. including major decis
     - Exposed controls for: Particle Count, Grid Size, Spacing, Jitter, Time Step (dt), Stiffness, Rest Density, and Viscosity.
     - Added a "Reset Simulation" button to re-initialize the domain with new parameters.
 
-## Session 6 - Fluid Rendering Integration (2025-11-30)
-- **Goal:** Implement Screen Space Fluid Rendering similar to WebGPU-Ocean demo.
-- **Implementation:**
-    - Ported `WebGPU-Ocean/render` shaders and logic to a new ES module: `demos/shared/fluidRenderer.js`.
-    - Implemented `FluidRenderer` class handling multi-pass rendering:
-        1. Depth Map generation (rendering spheres to float texture).
-        2. Bilateral Filter (Depth smoothing) - separable blur.
-        3. Thickness Map generation (rendering spheres with additive blending).
-        4. Gaussian Filter (Thickness smoothing).
-        5. Fluid Composition (Raymarching depth, computing normal from depth gradient, Fresnel/Reflection/Refraction shading).
-    - Updated `demos/shared/orbitControls.js` to expose inverse view/projection matrices required for position reconstruction from depth.
-    - Updated `demos/mpm-visual.js` to include a "Render Mode" toggle (Particles vs Fluid) and integrate the `FluidRenderer`.
-- **Refinement & Bug Fixes:**
-    - **Lighting:** Updated `FLUID_WGSL` with a brighter procedural sky gradient and adjusted material parameters (specular/fresnel) to fix the "dark fluid" issue.
-    - **Granularity:** Increased default visual radius for fluid rendering to 0.4 (vs 0.25 for particles) to improve smoothing overlap.
-    - **Crash Fix:** Fixed a `GPUValidationError` during simulation reset (buffer size mismatch). Implemented an `initializing` flag to pause the render loop during reset and ensured `currentParticleCount` tracks the *active* simulation state, preventing the renderer from accessing new large counts with old small buffers.
-- **Result:** Users can now switch between raw particle view and a smooth liquid surface view in the demo, with robust parameter controls.
+## Session 6 - Fluid Rendering & Interaction (2025-11-30)
+- **Fluid Rendering:**
+    - Ported Screen Space Fluid Rendering (SSFR) pipeline from WebGPU-Ocean to `demos/shared/fluidRenderer.js`.
+    - Implemented multi-pass rendering (Depth, Blur, Thickness, Blur, Composite) with custom shaders.
+    - Updated `OrbitCamera` to expose matrices for position reconstruction.
+    - Integrated fluid renderer into `mpm-visual.js` with a "Render Mode" toggle.
+    - Fixed validation errors related to unused sampler bindings and buffer size mismatches during reset.
+- **Sphere Interaction:**
+    - Implemented interactive sphere collider (mouse drag with Shift+Click).
+    - Updated `G2P_WGSL` shader to include sphere collision logic (simple position projection and velocity reflection).
+    - Added `MouseInteraction` uniform struct and binding to the pipeline.
+    - Added `SphereRenderer` to visualize the interaction sphere.
+    - Added raycasting logic in `mpm-visual.js` to move the sphere in the XZ plane.
+- **Feature Enhancements:**
+    - Increased max particle count limit to 1,000,000 (default 20,000).
+    - Added controls for Box Size (Grid Dimensions) and Ambient Temperature.
+    - Improved mobile orbit controls (added `touch-action: none` to canvas).
+    - Increased camera `far` clip plane to 1000 and `maxRadius` to 800 to support larger scenes.
+    - **Device Orientation:** Added `deviceorientation` event listener to control gravity direction, enabling "water sloshing" on mobile devices. Updated `UPDATE_GRID_WGSL` to use a dynamic gravity uniform. Implemented a "tare" calibration feature to set the current orientation as the neutral gravity direction.
+- **Bug Fixes:**
+    - Fixed Z-Buffer occlusion issue by enabling depth testing/writing in the fluid renderer and sharing the depth buffer with the main scene.
+    - Fixed "Temperature" slider by visualizing temperature data (color mapping Blue->Red) in the particle renderer.
+    - Collapsed UI by default on mobile devices to maximize screen real estate.

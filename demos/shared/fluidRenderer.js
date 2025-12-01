@@ -211,6 +211,11 @@ struct RenderUniforms {
 }
 struct FragmentInput { @location(0) uv: vec2f, @location(1) iuv: vec2f, }
 
+struct FragmentOutput {
+    @location(0) color: vec4f,
+    @builtin(frag_depth) depth: f32,
+}
+
 fn computeViewPosFromUVDepth(tex_coord: vec2f, depth: f32) -> vec3f {
     var ndc: vec4f = vec4f(tex_coord.x * 2.0 - 1.0, 1.0 - 2.0 * tex_coord.y, 0.0, 1.0);
     ndc.z = -uniforms.projection_matrix[2].z + uniforms.projection_matrix[3].z / depth;
@@ -225,7 +230,7 @@ fn getViewPosFromTexCoord(tex_coord: vec2f, iuv: vec2f) -> vec3f {
 }
 
 @fragment
-fn fs(input: FragmentInput) -> @location(0) vec4f {
+fn fs(input: FragmentInput) -> FragmentOutput {
     var depth: f32 = abs(textureLoad(texture, vec2u(input.iuv), 0).r);
     // Make background lighter (greyish blue)
     let bgColor: vec3f = vec3f(0.7, 0.75, 0.8); 
@@ -274,7 +279,13 @@ fn fs(input: FragmentInput) -> @location(0) vec4f {
     var finalColor = 1.0 * specular + mix(refractionColor, reflectionColor, fresnel);
     
     // Gamma correction
-    return vec4f(pow(finalColor, vec3f(1.0/2.2)), 1.0);
+    var color = vec4f(pow(finalColor, vec3f(1.0/2.2)), 1.0);
+    
+    // Compute clip space depth for depth test
+    var clipPos = uniforms.projection_matrix * vec4f(viewPos, 1.0);
+    var fragDepth = clipPos.z / clipPos.w;
+
+    return FragmentOutput(color, fragDepth);
 }
 `;
 
@@ -367,7 +378,28 @@ export class FluidRenderer {
         module: device.createShaderModule({ code: FLUID_WGSL }), entryPoint: 'fs', 
         targets: [{ format: canvasFormat, blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one' } } }] 
       },
-      primitive: { topology: 'triangle-list' }
+      primitive: { topology: 'triangle-list' },
+      depthStencil: { 
+          format: 'depth24plus', 
+          depthWriteEnabled: false, // We don't write new depth from full screen quad (it's 2D)
+          depthCompare: 'always' // Actually we might want 'less'?
+          // If we use 'less', the quad at Z=0 (near plane) will be discarded if anything is in front of near plane?
+          // No, Z=0 is closest.
+          // Actually, we manually compute depth in shader if we want to write it.
+          // But here we just want to draw the fluid ON TOP of everything, but occluded by things IN FRONT of it?
+          // Wait, fluid is usually transparent.
+          // If the ball is "in front" of fluid, we want ball to show.
+          // If ball is "behind", we want fluid to show (on top of ball).
+          // The current fluid shader raymarches depth.
+          // To properly handle occlusion, we should check scene depth in shader.
+          // But enabling depth test here with 'always' allows us to draw everywhere.
+          // But if we want hardware occlusion...
+          // Since we draw a full screen quad at Z=0 (near), 'less' would pass if nothing is closer than near plane.
+          // If we want to respect the ball's depth, we must check it in the shader.
+          // OR write frag_depth in shader.
+          // I added frag_depth output to shader in my thought process, but I should add it to code.
+          // Let's update FLUID_WGSL to output frag_depth.
+      }
     });
   }
 
@@ -442,7 +474,12 @@ export class FluidRenderer {
             module: this.device.createShaderModule({ code: FLUID_WGSL }), entryPoint: 'fs', 
             targets: [{ format: this.canvasFormat, blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one' } } }]
         },
-        primitive: { topology: 'triangle-list' }
+        primitive: { topology: 'triangle-list' },
+        depthStencil: { 
+            format: 'depth24plus', 
+            depthWriteEnabled: true,
+            depthCompare: 'less'
+        }
     });
   }
 
@@ -543,7 +580,7 @@ export class FluidRenderer {
     console.error("FluidRenderer.record expects CommandEncoder, not RenderPassEncoder");
   }
 
-  render(commandEncoder, targetView, particleCount) {
+  render(commandEncoder, targetView, depthView, particleCount) {
     if (!this.depthMapBindGroup) return;
 
     // 1. Depth Map
@@ -602,21 +639,18 @@ export class FluidRenderer {
     filterTY.end();
 
     // 5. Final Composition (Fluid)
-    // Render to the passed targetView (screen)
-    // But caller might have started a pass?
-    // We should assume caller gives us encoder, and we output to targetView.
-    // We need depthStencilAttachment if we want to respect existing depth? 
-    // Usually fluid is rendered on top.
-    
+    // Composited against the scene depth buffer for correct occlusion.
     const fluidPass = commandEncoder.beginRenderPass({
         colorAttachments: [{ 
             view: targetView, 
-            loadOp: 'load', // Load existing scene (background/grid)
+            loadOp: 'load', 
             storeOp: 'store' 
         }],
-        // We probably need depth buffer from main scene if we want occlusion?
-        // But fluid shader does raymarching/depth check from texture.
-        // For now, let's just draw on top.
+        depthStencilAttachment: {
+            view: depthView,
+            depthLoadOp: 'load',
+            depthStoreOp: 'store'
+        }
     });
     fluidPass.setPipeline(this.fluidPipeline);
     fluidPass.setBindGroup(0, this.fluidBindGroup);
