@@ -211,8 +211,9 @@ The `Particle` struct contains two `mat3x3f` matrices (`F` and `C`). In WGSL `st
 
 I have verified the fix by code inspection against WGSL layout rules and the reference implementation (which used an 80-byte struct with explicit 48-byte matrix allocation).
 
-### Feature Update: Interactive UI
-Following the bug fix, I have upgraded `demos/mpm-visual.html` to include a full control panel using `lil-gui` (similar to Toychest).
-- **Controls Added:** Particle Count, Grid Size, Spacing, Jitter, Time Step, Stiffness, Rest Density, Viscosity.
-- **Functionality:** Users can now tweak simulation parameters live or reset the simulation with new particle counts/grid sizes to stress-test the stability fix.
+### Feature Update: Interactive UI & Fluid Rendering
+Following the bug fix, I have upgraded `demos/mpm-visual.html` to include a full control panel using `lil-gui` and integrated a Screen Space Fluid Renderer.
+- **Controls:** Parameter tuning (Particle Count, Grid Size, Spacing, Jitter, Time Step, Stiffness, Rest Density, Viscosity) and a "Render Mode" toggle.
+- **Fluid Renderer:** Ported the multi-pass rendering pipeline (Depth -> Bilateral Blur -> Thickness -> Gaussian Blur -> Composition) from WebGPU-Ocean to `demos/shared/fluidRenderer.js`.
+- **Refinement:** Adjusted lighting (brighter background/sky) and default parameters (increased fluid visual radius) to ensure the fluid looks liquid rather than granular or dark. Fixed a validation error during reset by properly managing buffer state transitions.
 </gemini-3-pro>

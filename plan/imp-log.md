@@ -52,7 +52,20 @@ this file contains a concise narrative of the development. including major decis
     - Exposed controls for: Particle Count, Grid Size, Spacing, Jitter, Time Step (dt), Stiffness, Rest Density, and Viscosity.
     - Added a "Reset Simulation" button to re-initialize the domain with new parameters.
 
-## Open Items
-- Verify the fix with `demos/mpm-visual.html` (now interactive).
-- Audit rigid-body demo bindings if reused; otherwise isolate MLS-MPM module.
-- Sketch `Engine` + `RigidDomain` adapter and `MpmDomain` scaffolding; keep headless test harness in scope (mass/momentum checks).
+## Session 6 - Fluid Rendering Integration (2025-11-30)
+- **Goal:** Implement Screen Space Fluid Rendering similar to WebGPU-Ocean demo.
+- **Implementation:**
+    - Ported `WebGPU-Ocean/render` shaders and logic to a new ES module: `demos/shared/fluidRenderer.js`.
+    - Implemented `FluidRenderer` class handling multi-pass rendering:
+        1. Depth Map generation (rendering spheres to float texture).
+        2. Bilateral Filter (Depth smoothing) - separable blur.
+        3. Thickness Map generation (rendering spheres with additive blending).
+        4. Gaussian Filter (Thickness smoothing).
+        5. Fluid Composition (Raymarching depth, computing normal from depth gradient, Fresnel/Reflection/Refraction shading).
+    - Updated `demos/shared/orbitControls.js` to expose inverse view/projection matrices required for position reconstruction from depth.
+    - Updated `demos/mpm-visual.js` to include a "Render Mode" toggle (Particles vs Fluid) and integrate the `FluidRenderer`.
+- **Refinement & Bug Fixes:**
+    - **Lighting:** Updated `FLUID_WGSL` with a brighter procedural sky gradient and adjusted material parameters (specular/fresnel) to fix the "dark fluid" issue.
+    - **Granularity:** Increased default visual radius for fluid rendering to 0.4 (vs 0.25 for particles) to improve smoothing overlap.
+    - **Crash Fix:** Fixed a `GPUValidationError` during simulation reset (buffer size mismatch). Implemented an `initializing` flag to pause the render loop during reset and ensured `currentParticleCount` tracks the *active* simulation state, preventing the renderer from accessing new large counts with old small buffers.
+- **Result:** Users can now switch between raw particle view and a smooth liquid surface view in the demo, with robust parameter controls.

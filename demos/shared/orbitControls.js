@@ -111,6 +111,37 @@ class OrbitCamera {
     return this.multiplyMat4ColumnMajor(view, proj);
   }
 
+  getMatrices(aspect) {
+    const fov = Math.PI / 4;
+    const near = 0.1;
+    const far = 200;
+    const f = 1 / Math.tan(fov / 2);
+    const proj = new Float32Array([
+      f / aspect, 0, 0, 0,
+      0, f, 0, 0,
+      0, 0, far / (near - far), -1,
+      0, 0, far * near / (near - far), 0,
+    ]);
+
+    const cx = Math.sin(this.phi) * Math.sin(this.theta) * this.radius + this.target[0];
+    const cy = Math.cos(this.phi) * this.radius + this.target[1];
+    const cz = Math.sin(this.phi) * Math.cos(this.theta) * this.radius + this.target[2];
+    const eye = [cx, cy, cz];
+    const view = this.lookAt(eye, this.target, [0, 1, 0]);
+    const viewProj = this.multiplyMat4ColumnMajor(view, proj);
+    const invView = this.invertMat4(view);
+    const invProj = this.invertMat4(proj);
+
+    return {
+        view,
+        proj,
+        viewProj,
+        invView,
+        invProj,
+        eye
+    };
+  }
+
   lookAt(eye, target, up) {
     const z = this.normalize([
       eye[0] - target[0],
@@ -153,6 +184,38 @@ class OrbitCamera {
       }
     }
     return out;
+  }
+
+  invertMat4(m) {
+    const inv = new Float32Array(16);
+    const det = 
+      m[0] * (m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10]) +
+      m[4] * (m[1] * m[11] * m[14] - m[1] * m[10] * m[15] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10]) +
+      m[8] * (m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6]) +
+      m[12] * (m[1] * m[7] * m[10] - m[1] * m[6] * m[11] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6]);
+
+    if (det === 0) return m; // or identity?
+
+    const invDet = 1.0 / det;
+
+    inv[0] = (m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10]) * invDet;
+    inv[1] = (m[1] * m[11] * m[14] - m[1] * m[10] * m[15] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10]) * invDet;
+    inv[2] = (m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6]) * invDet;
+    inv[3] = (m[1] * m[7] * m[10] - m[1] * m[6] * m[11] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6]) * invDet;
+    inv[4] = (m[4] * m[11] * m[14] - m[4] * m[10] * m[15] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10]) * invDet;
+    inv[5] = (m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10]) * invDet;
+    inv[6] = (m[0] * m[7] * m[14] - m[0] * m[6] * m[15] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6]) * invDet;
+    inv[7] = (m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6]) * invDet;
+    inv[8] = (m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9]) * invDet;
+    inv[9] = (m[0] * m[11] * m[13] - m[0] * m[9] * m[15] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9]) * invDet;
+    inv[10] = (m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[5] * m[3]) * invDet;
+    inv[11] = (m[0] * m[7] * m[9] - m[0] * m[5] * m[11] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[5] * m[3]) * invDet;
+    inv[12] = (m[4] * m[10] * m[13] - m[4] * m[9] * m[14] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9]) * invDet;
+    inv[13] = (m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9]) * invDet;
+    inv[14] = (m[0] * m[6] * m[13] - m[0] * m[5] * m[14] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5]) * invDet;
+    inv[15] = (m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5]) * invDet;
+
+    return inv;
   }
 }
 

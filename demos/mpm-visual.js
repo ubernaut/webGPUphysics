@@ -1,6 +1,7 @@
 import { initWebGPU, mpm } from "../src/index.js";
 import { OrbitCamera } from "./shared/orbitControls.js";
 import { createSphereGeometry } from "./shared/geometries.js";
+import { FluidRenderer } from "./shared/fluidRenderer.js";
 
 const canvas = document.getElementById("canvas");
 const toggleBtn = document.getElementById("toggleBtn");
@@ -13,7 +14,8 @@ const errorEl = document.getElementById("error");
 
 let device, context, format;
 let depthTexture, depthView;
-let renderer;
+let renderer; // Particle renderer
+let fluidRenderer; // Fluid renderer
 let domain;
 let buffers; // Keep track of current buffers
 let running = true;
@@ -21,8 +23,11 @@ let lastTime = performance.now();
 let fps = 0;
 let lastDiag = 0;
 let animationFrameId;
+let currentParticleCount = 0;
+let initializing = false;
 
 const params = {
+  renderMode: 'Particles', // 'Particles' or 'Fluid'
   particleCount: 4000,
   gridSizeX: 32,
   gridSizeY: 32,
@@ -34,7 +39,9 @@ const params = {
   restDensity: 4.0,
   dynamicViscosity: 0.08,
   iterations: 1,
-  fixedPointScale: 1e7
+  fixedPointScale: 1e7,
+  visualRadius: 0.25, // For particles
+  fluidRadius: 0.4,   // For fluid (larger for overlap)
 };
 
 toggleBtn.addEventListener("click", () => {
@@ -70,6 +77,7 @@ function resize() {
   });
   depthView = depthTexture.createView();
   if (renderer) renderer.resize(width, height);
+  if (fluidRenderer) fluidRenderer.resize(width, height);
 }
 
 class MpmRenderer {
@@ -202,50 +210,68 @@ class MpmRenderer {
 }
 
 async function initSimulation() {
-  const particleCount = params.particleCount;
-  const gridSize = { x: params.gridSizeX, y: params.gridSizeY, z: params.gridSizeZ };
-  const blockOptions = { 
-    start: [2, 2, 2], 
-    gridSize, 
-    jitter: params.jitter, 
-    spacing: params.spacing 
-  };
+  if (initializing) return;
+  initializing = true;
+  statusEl.textContent = "initializing...";
 
-  const constants = {
-    stiffness: params.stiffness,
-    restDensity: params.restDensity,
-    dynamicViscosity: params.dynamicViscosity,
-    dt: params.dt,
-    fixedPointScale: params.fixedPointScale
-  };
-
-  // Create buffers
-  const posVelBuffer = device.createBuffer({
-    size: particleCount * 24,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
-  });
-
-  const setup = mpm.setupMpmDomain(device, {
-    particleCount,
-    gridSize,
-    iterations: params.iterations,
-    posVelBuffer,
-    constants
-  });
-
-  domain = setup.domain;
-  buffers = setup.buffers;
-
-  // Initialize particles
   try {
-    const data = mpm.createBlockParticleData({ count: particleCount, gridSize, ...blockOptions });
-    mpm.uploadParticleData(device, buffers.particleBuffer, data);
-  } catch(e) {
-    console.warn("Could not place all particles, simulation might be partial");
-  }
+    const particleCount = params.particleCount;
+    const gridSize = { x: params.gridSizeX, y: params.gridSizeY, z: params.gridSizeZ };
+    const blockOptions = { 
+        start: [2, 2, 2], 
+        gridSize, 
+        jitter: params.jitter, 
+        spacing: params.spacing 
+    };
 
-  renderer.updateBindGroup(posVelBuffer);
-  particleCountEl.textContent = particleCount.toString();
+    const constants = {
+        stiffness: params.stiffness,
+        restDensity: params.restDensity,
+        dynamicViscosity: params.dynamicViscosity,
+        dt: params.dt,
+        fixedPointScale: params.fixedPointScale
+    };
+
+    // Create buffers
+    // Safety size for PosVel struct stride 32
+    const posVelBuffer = device.createBuffer({
+        size: particleCount * 32, 
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
+    });
+
+    const setup = mpm.setupMpmDomain(device, {
+        particleCount,
+        gridSize,
+        iterations: params.iterations,
+        posVelBuffer,
+        constants
+    });
+
+    // Initialize particles
+    const data = mpm.createBlockParticleData({ count: particleCount, gridSize, ...blockOptions });
+    mpm.uploadParticleData(device, setup.buffers.particleBuffer, data);
+
+    // Atomic update of state
+    if (domain) {
+        // cleanup old if needed? WebGPU objects are GC'd or we should destroy them.
+        // For now rely on GC.
+    }
+    
+    domain = setup.domain;
+    buffers = setup.buffers;
+    currentParticleCount = particleCount;
+
+    if (renderer) renderer.updateBindGroup(posVelBuffer);
+    if (fluidRenderer) fluidRenderer.updateBindGroup(posVelBuffer);
+    
+    particleCountEl.textContent = particleCount.toString();
+    statusEl.textContent = "running";
+  } catch(e) {
+    console.warn("Init error:", e);
+    setError(e);
+  } finally {
+    initializing = false;
+  }
 }
 
 async function setup() {
@@ -254,7 +280,10 @@ async function setup() {
     device = gpu.device;
     context = canvas.getContext("webgpu");
     format = navigator.gpu.getPreferredCanvasFormat();
+    
     renderer = new MpmRenderer(device);
+    fluidRenderer = new FluidRenderer(device, format);
+    
     resize();
     window.addEventListener("resize", resize);
 
@@ -266,17 +295,20 @@ async function setup() {
     // GUI Setup
     const gui = new window.lil.GUI({ title: "MLS-MPM Controls" });
     
+    gui.add(params, "renderMode", ['Particles', 'Fluid']).name("Render Mode");
+    
+    const viewFolder = gui.addFolder("Visuals");
+    viewFolder.add(params, "visualRadius", 0.05, 1.0, 0.05).name("Particle Radius");
+    viewFolder.add(params, "fluidRadius", 0.05, 1.0, 0.05).name("Fluid Radius");
+
     const simFolder = gui.addFolder("Simulation");
-    simFolder.add(params, "particleCount", 100, 20000, 100).name("Particle Count").onFinishChange(initSimulation);
+    simFolder.add(params, "particleCount", 100, 50000, 100).name("Particle Count").onFinishChange(initSimulation);
     simFolder.add(params, "gridSizeX", 16, 128, 16).name("Grid X").onFinishChange(initSimulation);
     simFolder.add(params, "spacing", 0.1, 2.0, 0.05).name("Spacing").onFinishChange(initSimulation);
     simFolder.add(params, "jitter", 0.0, 1.0, 0.1).name("Jitter").onFinishChange(initSimulation);
     
     const physFolder = gui.addFolder("Physics Constants");
     physFolder.add(params, "dt", 0.001, 0.2, 0.001).name("Time Step (dt)").onChange(v => {
-      // Need to re-init pipelines to bake constants? 
-      // Current implementation bakes constants into pipelines. 
-      // So changing constants requires re-init.
       initSimulation();
     });
     physFolder.add(params, "stiffness", 0.1, 50.0, 0.1).onFinishChange(initSimulation);
@@ -297,42 +329,70 @@ async function setup() {
         fpsEl.textContent = fps.toFixed(1);
       }
 
+      if (initializing) {
+        // Skip frame if initializing to avoid buffer mismatch
+        animationFrameId = requestAnimationFrame(frame);
+        return;
+      }
+
       const encoder = device.createCommandEncoder({ label: "mpm-visual-frame" });
       if (running && domain) {
         domain.step(encoder, params.dt);
       }
 
-      const viewProj = camera.getViewProj(canvas.width / canvas.height);
-      renderer.updateUniforms(viewProj, 0.25); // Radius 0.25 visual
+      // Render
+      if (params.renderMode === 'Fluid') {
+        const matrices = camera.getMatrices(canvas.width / canvas.height);
+        fluidRenderer.updateUniforms(matrices, params.fluidRadius); 
+        
+        const textureView = context.getCurrentTexture().createView();
+        const clearPass = encoder.beginRenderPass({
+            colorAttachments: [{
+                view: textureView,
+                clearValue: { r: 0.05, g: 0.08, b: 0.14, a: 1 },
+                loadOp: 'clear',
+                storeOp: 'store'
+            }]
+        });
+        clearPass.end();
+        
+        fluidRenderer.render(encoder, textureView, currentParticleCount);
 
-      const textureView = context.getCurrentTexture().createView();
-      const pass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: textureView,
-          loadOp: "clear",
-          storeOp: "store",
-          clearValue: { r: 0.05, g: 0.08, b: 0.14, a: 1 }
-        }],
-        depthStencilAttachment: {
-          view: depthView,
-          depthLoadOp: "clear",
-          depthStoreOp: "store",
-          depthClearValue: 1.0
-        }
-      });
-      renderer.record(pass, params.particleCount);
-      pass.end();
+      } else {
+        const viewProj = camera.getViewProj(canvas.width / canvas.height);
+        renderer.updateUniforms(viewProj, params.visualRadius);
+
+        const textureView = context.getCurrentTexture().createView();
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: textureView,
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0.05, g: 0.08, b: 0.14, a: 1 }
+          }],
+          depthStencilAttachment: {
+            view: depthView,
+            depthLoadOp: "clear",
+            depthStoreOp: "store",
+            depthClearValue: 1.0
+          }
+        });
+        renderer.record(pass, currentParticleCount);
+        pass.end();
+      }
+
       device.queue.submit([encoder.finish()]);
 
       // Occasional diagnostics
       if (now - lastDiag > 500 && running && buffers) {
         lastDiag = now;
-        mpm.computeMassMomentum(device, buffers.particleBuffer, params.particleCount)
+        // Use currentParticleCount here too
+        mpm.computeMassMomentum(device, buffers.particleBuffer, currentParticleCount)
           .then(({ mass, momentum }) => {
             massEl.textContent = mass.toFixed(3);
             momentumEl.textContent = momentum.map((v) => v.toFixed(3)).join(", ");
           })
-          .catch(err => console.warn(err)); // Don't crash loop on readback error
+          .catch(err => console.warn(err));
       }
 
       animationFrameId = requestAnimationFrame(frame);
