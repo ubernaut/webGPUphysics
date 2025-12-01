@@ -30,14 +30,25 @@ let initialOrientation = null;
 
 const MATERIAL_NAMES = ['Ice (Brittle)', 'Rubber (Elastic)', 'Water (Liquid)', 'Steam (Gas)'];
 
+// Parse URL query parameters
+function getQueryParam(name, defaultValue) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const value = urlParams.get(name);
+    if (value !== null) {
+        const num = parseFloat(value);
+        return isNaN(num) ? defaultValue : num;
+    }
+    return defaultValue;
+}
+
 const params = {
   renderMode: 'Fluid', // 'Particles' or 'Fluid'
-  particleCount: 300,
+  particleCount: getQueryParam('particles', 20000),  // Default 20000, override with ?particles=N
   gridSizeX: 64,
   gridSizeY: 64,
   gridSizeZ: 64,
-  spacing: 0.65,
-  jitter: 0.5,
+  spacing: 1.0,        // Increased from 0.65 for better stability
+  jitter: 0.1,         // Reduced from 0.5 (solids need regular packing)
   
   // Material selection
   materialType: 2, // 0=Ice, 1=Rubber, 2=Water, 3=Steam
@@ -55,10 +66,10 @@ const params = {
   fixedPointScale: 1e5,
   
   // Brittle solid parameters
-  tensileStrength: 10.0,
-  damageRate: 2.0,
-  mu: 1000.0,       // Shear modulus for solids
-  lambda: 1000.0,   // Bulk modulus for solids
+  tensileStrength: 5.0,
+  damageRate: 5.0,
+  mu: 50.0,       // Shear modulus for solids (soft for stability)
+  lambda: 50.0,   // Bulk modulus for solids (soft for stability)
   
   // Rendering
   visualRadius: 0.2, // For particles
@@ -471,27 +482,41 @@ async function setup() {
     // Material Type Selection (for single material mode)
     const materialOptions = { 'Ice (Brittle)': 0, 'Rubber (Elastic)': 1, 'Water (Liquid)': 2, 'Steam (Gas)': 3 };
     simFolder.add(params, "materialType", materialOptions).name("Material Type").onChange((val) => {
-        // Update defaults based on material
+        // Update defaults based on material - IMPORTANT: solids need more spacing and less jitter
         switch (parseInt(val)) {
-            case 0: // Ice
+            case 0: // Ice (needs regular packing, low jitter)
                 params.temperature = 260;
-                params.mu = 1000;
-                params.lambda = 1000;
+                params.mu = 50;
+                params.lambda = 50;
                 params.stiffness = 50;
+                params.tensileStrength = 5;
+                params.damageRate = 5;
+                params.spacing = 1.2;    // More spacing for solids
+                params.jitter = 0.0;     // No jitter for solids (regular crystal lattice)
+                params.restDensity = 0.92; // Ice density
                 break;
-            case 1: // Rubber
+            case 1: // Rubber (soft elastic, needs regular packing)
                 params.temperature = 300;
-                params.mu = 10;
-                params.lambda = 100;
+                params.mu = 5;
+                params.lambda = 20;
                 params.stiffness = 50;
+                params.spacing = 1.2;
+                params.jitter = 0.0;
+                params.restDensity = 1.0;
                 break;
-            case 2: // Water
+            case 2: // Water (can have more jitter)
                 params.temperature = 300;
                 params.stiffness = 50;
+                params.spacing = 0.8;
+                params.jitter = 0.3;
+                params.restDensity = 1.0;
                 break;
-            case 3: // Steam
+            case 3: // Steam (sparse)
                 params.temperature = 400;
                 params.stiffness = 50;
+                params.spacing = 2.0;    // Very sparse for gas
+                params.jitter = 0.5;
+                params.restDensity = 0.1;
                 break;
         }
         gui.controllersRecursive().forEach(c => c.updateDisplay());

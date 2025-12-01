@@ -59,12 +59,13 @@ export const MPM_FIXED_POINT_SCALE = 1e5; // reduced from 1e7 to prevent overflo
 export const MATERIAL_PRESETS = {
   ice: {
     materialType: MATERIAL_TYPE.BRITTLE_SOLID,
-    // Real ice: E ≈ 9 GPa, but we use softened values for stability
+    // Softened significantly for explicit integration stability
+    // Real ice is very stiff (E ≈ 9 GPa), but explicit MPM requires softer values
     // E = 2μ(1+ν) ≈ 2.5 * mu for ν ≈ 0.25
-    mu: 1000.0,              // Shear modulus (softened for real-time)
-    lambda: 1000.0,          // Bulk modulus
-    tensileStrength: 10.0,   // Fracture threshold
-    damageRate: 2.0,         // How fast damage accumulates
+    mu: 50.0,                // Shear modulus (very soft for stability)
+    lambda: 50.0,            // Bulk modulus
+    tensileStrength: 5.0,    // Fracture threshold (lower for easier fracture)
+    damageRate: 5.0,         // How fast damage accumulates
     restDensity: 0.92        // Ice is less dense than water
   },
   water: {
@@ -80,8 +81,8 @@ export const MATERIAL_PRESETS = {
   },
   rubber: {
     materialType: MATERIAL_TYPE.ELASTIC_SOLID,
-    mu: 10.0,                // Soft shear modulus
-    lambda: 100.0            // Bulk modulus
+    mu: 5.0,                 // Soft shear modulus
+    lambda: 20.0             // Bulk modulus
   }
 };
 

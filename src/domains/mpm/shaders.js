@@ -261,14 +261,32 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     case MATERIAL_BRITTLE_SOLID: {
       let F = p.F;
       let J = determinant(F);
-      volume = p.volume0 * max(J, 0.1);
+      let clampedJ = clamp(J, 0.5, 2.0);  // Prevent extreme compression/expansion
+      volume = p.volume0 * clampedJ;
       
-      let eps = 0.5 * (F + transpose(F)) - I;
+      // Use Green-Lagrange strain (better for larger deformations)
+      // E = 0.5 * (F^T * F - I)
+      let FTF = transpose(F) * F;
+      let E = 0.5 * (FTF - I);
+      
       let effective_mu = p.mu * (1.0 - p.damage);
       let effective_lambda = p.lambda * (1.0 - p.damage);
       
-      let trace_eps = eps[0][0] + eps[1][1] + eps[2][2];
-      stress = effective_lambda * trace_eps * I + 2.0 * effective_mu * eps;
+      let trace_E = E[0][0] + E[1][1] + E[2][2];
+      // Second Piola-Kirchhoff stress: S = λ·tr(E)·I + 2μ·E
+      let S = effective_lambda * trace_E * I + 2.0 * effective_mu * E;
+      // Convert to Cauchy stress: σ = (1/J) * F * S * F^T
+      stress = (1.0 / clampedJ) * F * S * transpose(F);
+      
+      // Clamp stress magnitude to prevent explosion
+      let stress_norm = sqrt(
+        stress[0][0]*stress[0][0] + stress[1][1]*stress[1][1] + stress[2][2]*stress[2][2] +
+        2.0*(stress[0][1]*stress[0][1] + stress[1][2]*stress[1][2] + stress[0][2]*stress[0][2])
+      );
+      let max_stress = 100.0;  // Maximum allowed stress magnitude
+      if (stress_norm > max_stress) {
+        stress = stress * (max_stress / stress_norm);
+      }
       
       let principal = eigenvalues_symmetric(stress);
       let max_principal = max(max(principal.x, principal.y), principal.z);
@@ -646,8 +664,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         p.phase = 0u;
         p.materialType = MATERIAL_BRITTLE_SOLID;
         p.damage = 0.0;
-        p.mu = 1000.0;
-        p.lambda = 1000.0;
+        // Use soft stiffness for explicit integration stability
+        p.mu = 50.0;
+        p.lambda = 50.0;
       }
     }
     
