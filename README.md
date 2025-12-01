@@ -13,6 +13,15 @@ WebGPU Physics is a high-performance, GPU-accelerated 3D rigid body physics engi
 
 The core idea is to represent rigid bodies as clouds of spherical particles. Collision detection and response are performed at the particle level, and the resulting forces are aggregated to drive the motion of the rigid bodies.
 
+## MLS-MPM (Materials) Progress
+- New WebGPU MLS-MPM scaffolding (water-first) lives under `src/domains/mpm/` with:
+  - Schema: 128B particle layout, 16B cell layout, fixed-point atomics helpers.
+  - WGSL kernels: clearGrid, p2g1, p2g2, updateGrid, g2p, copyPosition.
+  - Factories/headless helper: buffer/pipeline/bind-group setup, block particle initialization, and a `createHeadlessMpm` runner.
+- A minimal `Engine` (`src/engine.js`) sequences domains; exported from `src/index.js` along with the `mpm` namespace.
+- Headless demo: `demos/mpm-headless.html` runs the MLS-MPM pipeline without rendering, shows mass/momentum and drift diagnostics. Access via `npm run dev` → `/demos/mpm-headless.html` or open `docs/demos/mpm-headless.html` after build.
+- Visual demo: `demos/mpm-visual.html` renders MLS-MPM particles with orbit controls (WebGPU). Access via `npm run dev` → `/demos/mpm-visual.html` or open `docs/demos/mpm-visual.html` after build.
+
 ## Simulation Algorithms
 
 ### 1. Rigid Body Representation

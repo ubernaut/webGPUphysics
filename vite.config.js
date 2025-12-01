@@ -12,6 +12,8 @@ export default defineConfig({
         main: resolve(__dirname, 'index.html'),
         demos: resolve(__dirname, 'demos/index.html'),
         toychest: resolve(__dirname, 'demos/toychest.html'),
+        mpmHeadless: resolve(__dirname, 'demos/mpm-headless.html'),
+        mpmVisual: resolve(__dirname, 'demos/mpm-visual.html'),
       },
     },
   },
