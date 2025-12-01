@@ -75,3 +75,17 @@ this file contains a concise narrative of the development. including major decis
     - Fixed Z-Buffer occlusion issue by enabling depth testing/writing in the fluid renderer and sharing the depth buffer with the main scene.
     - Fixed "Temperature" slider by visualizing temperature data (color mapping Blue->Red) in the particle renderer.
     - Collapsed UI by default on mobile devices to maximize screen real estate.
+
+## Session 7 - Phase 4: Thermodynamics & Phase Change (2025-11-30)
+- **Goal:** Implement water phase change (Ice <-> Water <-> Steam) and temperature-dependent material properties.
+- **Implementation:**
+    - **Constitutive Switching:** Updated `P2G2_WGSL` to apply different stress models based on `p.phase`:
+        - **Solid (Phase 0):** Neo-Hookean Elasticity (using `mu`, `lambda` derived from stiffness). Uses evolving Deformation Gradient `F`.
+        - **Liquid (Phase 1):** Tait EOS + Viscosity (existing water model).
+        - **Gas (Phase 2):** Simplified Ideal Gas EOS (linear pressure).
+    - **Deformation Gradient Evolution:** Updated `G2P_WGSL` to evolve `p.F` using velocity gradient `p.C` (`F_new = (I + dt * C) * F`). Added logic to reset `F` for fluids/gases to prevent elastic memory.
+    - **Phase Logic:** Added simple temperature-based phase transition logic in `G2P_WGSL`:
+        - `< 273K`: Solid (Ice).
+        - `> 373K`: Gas (Steam).
+        - Otherwise: Liquid (Water).
+- **Result:** Particles now change phase and physical behavior based on their temperature. Visual feedback via color (Blue=Cold, Red=Hot) allows observing these transitions.

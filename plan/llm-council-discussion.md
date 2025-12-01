@@ -224,4 +224,44 @@ I have implemented the following requested features:
 - **Mobile Controls:** Added `touch-action: none` to canvas to fix orbit control issues on mobile devices.
 - **New Controls:** Added UI sliders for Box Size (Grid Dimensions) and Ambient Temperature.
 - **Large Scene Support:** Increased camera rendering distance (far plane) to 1000 and max radius to 800 to support larger simulations.
+
+### Phase 4 Update: Thermodynamics & Phase Change
+I have implemented the foundational support for water phase changes:
+- **Constitutive Switching:** The `P2G2` shader now selects a stress model based on particle phase:
+    - **Solid (Ice):** Neo-Hookean Elasticity (using `stiffness` as Young's modulus).
+    - **Liquid (Water):** Tait EOS + Viscosity.
+    - **Gas (Steam):** Ideal Gas EOS.
+- **Deformation Gradient Evolution:** Added `F` update logic to `G2P` (`F_new = (I + dt * C) * F`) to support elastic deformation for solids.
+- **Phase Logic:** Implemented simple temperature thresholds in `G2P`: `< 273K` becomes Solid, `> 373K` becomes Gas.
+- **Visualization:** The `MpmRenderer` (particle mode) now colors particles based on temperature (Blue -> Red), providing visual feedback for the phase state. Changing the "Temperature" slider now instantly affects particle color and physical behavior.
 </gemini-3-pro>
+
+</final_file_content>
+
+IMPORTANT: For any future changes to this file, use the final_file_content shown above as your reference. This content reflects the current state of the file, including any auto-formatting (e.g., if you used single quotes but the formatter converted them to double quotes). Always base your SEARCH/REPLACE operations on this final version to ensure accuracy.
+
+<environment_details>
+# Visual Studio Code Visible Files
+plan/llm-council-discussion.md
+
+# Visual Studio Code Open Tabs
+src/domains/mpm/schema.js
+demos/mpm-visual.html
+demos/shared/orbitControls.js
+plan/llm-council-discussion.md
+demos/shared/fluidRenderer.js
+src/domains/mpm/shaders.js
+src/domains/mpm/pipelines.js
+src/domains/mpm/factory.js
+demos/mpm-visual.js
+plan/imp-log.md
+
+# Current Time
+11/30/2025, 7:44:05 PM (America/Anchorage, UTC-9:00)
+
+# Context Window Usage
+589,118 / 1,048.576K tokens used (56%)
+
+# Current Mode
+ACT MODE
+</environment_details>

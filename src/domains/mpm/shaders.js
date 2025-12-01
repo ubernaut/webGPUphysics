@@ -163,17 +163,56 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
   }
 
-  let volume = p.mass / max(density, 1e-6);
-  let pressure = max(-0.0, stiffness * (pow(density / rest_density, 5.0) - 1.0));
+  // Phase 0: Solid (Ice) - Neo-Hookean Elasticity
+  // Phase 1: Liquid (Water) - Tait EOS + Viscosity
+  // Phase 2: Gas (Steam) - Ideal Gas EOS
+  
+  var stress = mat3x3f(vec3f(0.), vec3f(0.), vec3f(0.));
+  var volume = p.mass / max(density, 1e-6); // Evolving volume for all phases (simplification)
 
-  var stress = mat3x3f(
-    vec3f(-pressure, 0.0, 0.0),
-    vec3f(0.0, -pressure, 0.0),
-    vec3f(0.0, 0.0, -pressure)
-  );
-  let dudv = p.C;
-  let strain = dudv + transpose(dudv);
-  stress += dynamic_viscosity * strain;
+  if (p.phase < 0.5) { // Solid
+     // Neo-Hookean
+     // mu, lambda from stiffness
+     let mu = stiffness * 10.0; // Solids are stiffer
+     let lambda = stiffness * 10.0;
+     
+     let F = p.F;
+     let J = determinant(F);
+     // Simple Neo-Hookean: 
+     // P = mu * (F - F^-T) + lambda * log(J) * F^-T
+     // Stress = (1/J) * P * F^T
+     // Stress = (mu/J) * (F*F^T - I) + (lambda/J) * log(J) * I
+     
+     // Approximate if F is close to I?
+     // Let's use Corotated or simple approach.
+     // For now, let's stick to a simpler elastic model or just high viscosity fluid?
+     // No, need elasticity.
+     
+     // Let's calculate F*F^T
+     let FFT = F * transpose(F);
+     let I = mat3x3f(vec3f(1,0,0), vec3f(0,1,0), vec3f(0,0,1));
+     
+     stress = (mu / J) * (FFT - I) + (lambda / J) * log(max(J, 1e-6)) * I;
+  } else if (p.phase < 1.5) { // Liquid
+     let pressure = max(-0.0, stiffness * (pow(density / rest_density, 5.0) - 1.0));
+     stress = mat3x3f(
+        vec3f(-pressure, 0.0, 0.0),
+        vec3f(0.0, -pressure, 0.0),
+        vec3f(0.0, 0.0, -pressure)
+     );
+     let dudv = p.C;
+     let strain = dudv + transpose(dudv);
+     stress += dynamic_viscosity * strain;
+  } else { // Gas
+     // Ideal Gas P = rho * R * T ?
+     // Simply higher pressure, lower density
+     let pressure = max(0.0, stiffness * 0.1 * (density / rest_density - 1.0)); // Simple linear EOS
+     stress = mat3x3f(
+        vec3f(-pressure, 0.0, 0.0),
+        vec3f(0.0, -pressure, 0.0),
+        vec3f(0.0, 0.0, -pressure)
+     );
+  }
 
   let factor = -volume * 4.0 * stress * dt;
 
@@ -346,6 +385,33 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   }
 
   p.C = B * 4.0;
+  
+  // Update Deformation Gradient (Elasticity)
+  // F_new = (I + dt * C) * F
+  let I = mat3x3f(vec3f(1,0,0), vec3f(0,1,0), vec3f(0,0,1));
+  p.F = (I + dt * p.C) * p.F;
+  
+  // Phase Logic
+  // Simple Temp Thresholds
+  if (p.temperature < 273.0) {
+     p.phase = 0.0; // Ice
+     // Maybe harden?
+  } else if (p.temperature > 373.0) {
+     p.phase = 2.0; // Steam
+  } else {
+     p.phase = 1.0; // Water
+  }
+  
+  // Plasticity/Fracture handling for solids?
+  if (p.phase < 0.5) {
+     // Clamp F to avoid infinite stretching?
+     // Simple plasticity: if determinant(F) is too wild, reset it?
+     // Or Clamp singular values.
+  } else {
+     // Fluid/Gas: Reset F to Identity to avoid elastic memory
+     p.F = I;
+  }
+
   p.position += p.velocity * dt;
   p.position = vec3f(
     clamp(p.position.x, 1.0, real_box_size.x - 2.0),
