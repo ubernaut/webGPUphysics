@@ -123,6 +123,14 @@ Phase 1 → Phase 2 → Phase 3 (Liquid MVP)
 
 Phase 4 is the architectural lynchpin—once the constitutive dispatch framework exists, adding new material types is incremental.
 
+## Phase Transition Strategy (Plan B - Emergent Phases)
+- Treat `materialType` as element identity; phase is emergent from state (temperature, pressure, density) via an order parameter/phase fraction.
+- Add phase fraction/order-parameter field; latent heat handled via energy budget rather than hard switches; constitutive blending based on phase fraction (solid/liquid/gas).
+- Properties derived per element from state: density with thermal expansion, bulk/shear moduli (solids), bulk+viscosity (liquids), gas constant (gases). Clamp/soften for stability at dt≈0.1s.
+- Keep per-material branches only for complex microstructures (e.g., wood, carbon fiber) on top of phase blending.
+- Frontend: element dropdowns spawn two blocks (50/50). Phase, pressure, and temperature drive behavior; no material flip on phase change.
+- Testing: headless harness to compare derived properties and gross behaviors (density, speed of sound, ideal-gas pressure) against reference tables per element/phase.
+
 ## Key Design Decisions
 
 ### Why Linear Elastic for Ice (Not Neo-Hookean)

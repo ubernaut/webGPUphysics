@@ -7,7 +7,8 @@ export const MATERIAL_TYPE = {
   ELASTIC_SOLID: 1,   // Rubber - Neo-Hookean
   LIQUID: 2,          // Water - Tait EOS
   GAS: 3,             // Steam - Ideal Gas
-  GRANULAR: 4         // Sand, snow - Drucker-Prager (future)
+  GRANULAR: 4,        // Sand, snow - Drucker-Prager (future)
+  IRON: 5             // Stiff elastic solid (metal)
 };
 
 export const MPM_PARTICLE_STRIDE = 160; // bytes (extended for multi-material)
@@ -27,7 +28,8 @@ export const MPM_PARTICLE_FIELDS = {
   C: 96,              // mat3x3<f32> (48B: 3 columns × 16B alignment)
   mu: 144,            // f32 (4B) - per-particle shear modulus
   lambda: 148,        // f32 (4B) - per-particle bulk modulus
-  padding: 152        // 8 bytes padding to align to 160 bytes
+  restDensity: 152,   // f32 (4B) - derived rest density (state dependent)
+  phaseFraction: 156  // f32 (4B) - order parameter (0 solid .. 1 gas via blending)
 };
 
 export const MPM_GRID_STRIDE = 32; // bytes (extended for thermal)
@@ -66,23 +68,52 @@ export const MATERIAL_PRESETS = {
     lambda: 50.0,            // Bulk modulus
     tensileStrength: 5.0,    // Fracture threshold (lower for easier fracture)
     damageRate: 5.0,         // How fast damage accumulates
-    restDensity: 0.92        // Ice is less dense than water
+    restDensity: 0.92,       // Ice is less dense than water
+    spacing: 1.2,
+    jitter: 0.0,
+    temperature: 260.0,
+    temperatureRange: [180, 320]
   },
   water: {
     materialType: MATERIAL_TYPE.LIQUID,
     stiffness: 50.0,         // Bulk modulus for Tait EOS
     restDensity: 1.0,
-    viscosity: 0.1
+    viscosity: 0.1,
+    spacing: 0.8,
+    jitter: 0.3,
+    temperature: 300.0,
+    temperatureRange: [250, 380]
   },
   steam: {
     materialType: MATERIAL_TYPE.GAS,
     gasConstant: 5.0,        // Pressure multiplier
-    restDensity: 0.01        // Very low density
+    restDensity: 0.01,       // Very low density
+    spacing: 2.0,
+    jitter: 0.5,
+    temperature: 450.0,
+    temperatureRange: [300, 1200]
   },
   rubber: {
     materialType: MATERIAL_TYPE.ELASTIC_SOLID,
     mu: 5.0,                 // Soft shear modulus
-    lambda: 20.0             // Bulk modulus
+    lambda: 20.0,            // Bulk modulus
+    restDensity: 1.0,
+    spacing: 1.1,
+    jitter: 0.1,
+    temperature: 300.0,
+    temperatureRange: [250, 450]
+  },
+  iron: {
+    materialType: MATERIAL_TYPE.IRON,
+    mu: 200.0,
+    lambda: 300.0,
+    restDensity: 7.87,
+    spacing: 1.0,
+    jitter: 0.0,
+    temperature: 300.0,
+    temperatureRange: [250, 1500],
+    tensileStrength: 50.0,
+    damageRate: 1.0
   }
 };
 
@@ -95,7 +126,8 @@ export const DEFAULT_SIMULATION_CONSTANTS = {
   fixedPointScale: MPM_FIXED_POINT_SCALE,
   tensileStrength: 10.0,     // For brittle fracture
   damageRate: 2.0,           // Damage accumulation rate
-  thermalDiffusivity: 0.05   // Heat diffusion rate (lower = slower spread)
+  thermalDiffusivity: 0.05,  // Heat diffusion rate (lower = slower spread)
+  ambientPressure: 1.0       // Dimensionless ambient pressure (1.0 ~ reference)
 };
 
 export function particleBufferSize(particleCount) {
@@ -122,7 +154,9 @@ export function particleViews(buffer, index = 0) {
     F: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.F, 12), // 3 columns × 4 floats (padded)
     C: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.C, 12), // 3 columns × 4 floats (padded)
     mu: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.mu, 1),
-    lambda: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.lambda, 1)
+    lambda: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.lambda, 1),
+    restDensity: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.restDensity, 1),
+    phaseFraction: new Float32Array(buffer, base + MPM_PARTICLE_FIELDS.phaseFraction, 1)
   };
 }
 

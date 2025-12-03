@@ -28,6 +28,7 @@ const zero3Padded = () => [
  * - start: [x,y,z] starting corner (default [0,0,0])
  * - spacing: particle spacing (default 0.65 to mirror WebGPU-Ocean)
  * - jitter: random jitter magnitude (default 0.0)
+ * - cubeSideCount: optional explicit cube side count (for cubic packing)
  * - materialType: MATERIAL_TYPE enum value (default LIQUID)
  * - mass: default 1.0
  * - temperature: default 273 K
@@ -49,7 +50,8 @@ export function createBlockParticleData(options) {
     phase = null,  // Auto-determine from materialType if not specified
     mu = null,     // Auto-determine from materialType if not specified
     lambda = null, // Auto-determine from materialType if not specified
-    restDensity = 1.0
+    restDensity = 1.0,
+    cubeSideCount = null
   } = options;
   
   if (!count || !gridSize) throw new Error("count and gridSize are required");
@@ -78,6 +80,11 @@ export function createBlockParticleData(options) {
       defaultMu = 0.0;
       defaultLambda = MATERIAL_PRESETS.steam.gasConstant;
       break;
+    case MATERIAL_TYPE.IRON:
+      defaultPhase = 0;  // Solid
+      defaultMu = MATERIAL_PRESETS.iron.mu;
+      defaultLambda = MATERIAL_PRESETS.iron.lambda;
+      break;
     case MATERIAL_TYPE.GRANULAR:
       defaultPhase = 0;  // Solid-ish
       defaultMu = 100.0;
@@ -96,47 +103,34 @@ export function createBlockParticleData(options) {
   const buf = new ArrayBuffer(particleBufferSize(count));
   let written = 0;
 
-  for (let y = start[1]; y < gridSize.y && written < count; y += spacing) {
-    for (let x = start[0]; x < gridSize.x && written < count; x += spacing) {
-      for (let z = start[2]; z < gridSize.z && written < count; z += spacing) {
+  const sideCount = cubeSideCount !== null ? cubeSideCount : Math.ceil(Math.cbrt(count));
+
+  for (let iy = 0; iy < sideCount && written < count; iy++) {
+    for (let ix = 0; ix < sideCount && written < count; ix++) {
+      for (let iz = 0; iz < sideCount && written < count; iz++) {
         const views = particleViews(buf, written);
+        const px = Math.min(start[0] + ix * spacing, gridSize.x - 2);
+        const py = Math.min(start[1] + iy * spacing, gridSize.y - 2);
+        const pz = Math.min(start[2] + iz * spacing, gridSize.z - 2);
         
-        // Position with optional jitter
         const jx = jitter ? (Math.random() * 2 - 1) * jitter : 0;
         const jy = jitter ? (Math.random() * 2 - 1) * jitter : 0;
         const jz = jitter ? (Math.random() * 2 - 1) * jitter : 0;
-        views.position.set([x + jx, y + jy, z + jz]);
+        views.position.set([px + jx, py + jy, pz + jz]);
         
-        // Material type (u32)
         views.materialType[0] = materialType;
-        
-        // Velocity
         views.velocity.set([0, 0, 0]);
-        
-        // Phase (u32)
         views.phase[0] = actualPhase;
-        
-        // Mass
         views.mass[0] = mass;
-        
-        // Initial/reference volume V0 = mass / rest_density
         views.volume0[0] = mass / restDensity;
-        
-        // Temperature
         views.temperature[0] = temperature;
-        
-        // Damage (0 = undamaged)
         views.damage[0] = 0.0;
-        
-        // Deformation gradient F = Identity
         views.F.set(identity3Padded());
-        
-        // APIC affine matrix C = 0
         views.C.set(zero3Padded());
-        
-        // Material properties
         views.mu[0] = actualMu;
         views.lambda[0] = actualLambda;
+        views.restDensity[0] = restDensity;
+        views.phaseFraction[0] = 0.0;
         
         written += 1;
       }

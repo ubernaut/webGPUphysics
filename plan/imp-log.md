@@ -178,3 +178,80 @@ Implemented heat transfer via the MPM grid, following the same P2G/G2P pattern a
 - 20,000 particles runs at 60fps on modern GPUs
 - Sub-stepping (dt=0.005) with 20 iterations per frame
 - Fixed-point scale 1e5 prevents overflow in atomics
+
+## [2025-12-02] Phase Change Analysis and Heat Source Fix
+
+### Water Simulation Phase Change Issues Identified
+
+**1. Latent Heat Implementation is Fundamentally Broken**
+The phase transition logic in `G2P_WGSL` runs every frame and recomputes `latent_consumed` from scratch. There's no persistent state tracking how much latent heat has been absorbed/released. A particle will instantly transition if `excess_temp * SPECIFIC_HEAT >= LATENT_HEAT_MELT * 0.9`, which happens when temp is ~280K (only 7° above melting).
+
+**Fix Required:** Add per-particle `latentHeatAccumulated` field to track gradual absorption/release.
+
+**2. Temperature-Based Phase Check Ignores Non-Phase-Changing Materials**
+The phase transition block checks for LIQUID/GAS/BRITTLE_SOLID but doesn't prevent inappropriate transitions (e.g., rubber shouldn't melt at 273K).
+
+**3. Gas Pressure Formula Uses Fluid Stiffness**
+```wgsl
+let pressure = stiffness * 5.0 * (density / rest_density) * (p.temperature / 273.0);
+```
+The `stiffness` parameter here is the fluid stiffness from UI, not a gas-specific constant. When transitioning water→steam, the value doesn't make physical sense.
+
+**4. Phase Change Property Reset Inconsistency**
+- Freezing updates `mu/lambda` to 50.0
+- Boiling/condensing does NOT update `mu/lambda`
+This asymmetry causes different behavior depending on phase transition direction.
+
+### UI Controls Causing Issues
+
+**Controls that should depend on MATERIAL TYPE:**
+| Control | Issue |
+|---------|-------|
+| `stiffness` | Only meaningful for LIQUID (Tait EOS). Should be hidden for solids |
+| `mu`, `lambda` | Only meaningful for solids. Should be hidden for fluids |
+| `tensileStrength`, `damageRate` | Only meaningful for BRITTLE_SOLID |
+| `restDensity` | Different materials have very different densities |
+
+**Controls that should depend on TIME STEP (dt):**
+| Control | Issue |
+|---------|-------|
+| `mu`, `lambda` | High values + high dt = CFL violation → explosion |
+| `damageRate` | Damage = `damage_rate * dt`. High rate + high dt = instant shattering |
+
+**CFL Stability Constraint:** `dt_safe ≈ C * sqrt(ρ/E) * dx` where E ≈ 2*mu
+- With mu=5000, dt=0.2, the simulation WILL explode
+- UI should either auto-compute safe dt or warn user
+
+### Heat Source Fix Applied
+
+**Problem:** Heat source only worked when `mouse.temperature > 0.0`. This prevented cooling (e.g., 200K freeze sphere).
+
+**Fix:** Changed threshold to `> 1.0` (since 0K is absolute zero and meaningless). Increased thermal blend factor from 0.1 to 0.2 for stronger effect.
+
+**Default Changed:** `heatSourceTemp` now defaults to 400K (active by default) instead of 0 (disabled).
+
+### Files Modified
+- `src/domains/mpm/shaders.js` - Fixed heat source thermal effect threshold
+- `demos/mpm-visual.js` - Changed default heatSourceTemp from 0 to 400K
+
+## [2025-12-03] Material presets + ambient pressure (UI)
+- Added per-material preset folders in `demos/mpm-visual.js` with unique defaults for spacing, jitter, rest density, stiffness/viscosity or solid moduli, fracture limits, and gas constants; applying a preset retunes the active simulation.
+- Expanded temperature sliders (materials and heat source) to 0–1500K and added an `ambientPressure` control alongside gravity; gas pressure now uses the per-particle gas constant with an ambient baseline.
+- `SimulationUniforms` now carries ambient pressure into P2G2/G2P; boiling/condensing thresholds shift with ambient pressure for gas phases.
+
+## [2025-12-03] Plan B (Emergent Phase) Strategy
+- Decision: Phase becomes emergent via state and an order parameter/phase fraction; `materialType` encodes element identity only.
+- Properties will be derived per element from temperature/pressure (thermal expansion, solid moduli, liquid bulk/viscosity, gas constants), with dt≈0.1 safety clamping. Constitutive blending uses phase fraction; per-material branches reserved for complex microstructures (wood/carbon fiber).
+- Frontend will drop material-specific controls in favor of two element dropdowns; each element spawns half the particles as separate blocks.
+- Testing approach: headless harness to compare derived densities/pressure/speed-of-sound against reference tables per element/phase with tolerances; flag deviations.
+
+## [2025-12-04] Emergent Phase cleanup + element validation
+- Removed legacy temperature-triggered phase transition block in G2P; phase is now implied via order-parameter logic in P2G2.
+- Added element property tables (melt/boil, densities, moduli, viscosities, gas constants) and made materialType act as element ID; derived restDensity/phaseFraction stored per particle.
+- UI spawns two element blocks (50/50) via dropdowns; removed material-specific controls.
+- Added CPU-side validation script `tests/element-validation.js` mirroring shader derivation; run via `node tests/element-validation.js`. Build passes (`npm run build`).
+
+## [2025-12-04] Cube spawning + headless runtime test
+- Updated particle init to support explicit cube packing; mpm-visual now spawns each element as a cube whose side count is the cube root of its particle share.
+- mpm-headless now accepts `?material=Name` and uses cube packing; added Playwright-based headless runtime smoke test (`npm run test:headless`) that serves built docs and fails on console errors/GPU validation issues.
+- Ensured pipeline constants are finite defaults; headless runtime, build, and element validation all pass.

@@ -1,10 +1,4 @@
-// WGSL shader sources for MLS-MPM (multi-material constitutive framework + thermal diffusion).
-// Supports: BRITTLE_SOLID (linear elastic + fracture), ELASTIC_SOLID (Neo-Hookean),
-//           LIQUID (Tait EOS), GAS (Ideal Gas), GRANULAR (Drucker-Prager - future)
-// Thermal: Heat transfer via grid, latent heat for phase transitions
-
-// Material type constants (must match schema.js MATERIAL_TYPE enum)
-const MATERIAL_CONSTANTS = /* wgsl */ `
+import{d as P}from"./device-CAsdAK37.js";const w={BRITTLE_SOLID:0,ELASTIC_SOLID:1,LIQUID:2,GAS:3,GRANULAR:4,IRON:5},S=160,n={position:0,materialType:12,velocity:16,phase:28,mass:32,volume0:36,temperature:40,damage:44,F:48,C:96,mu:144,lambda:148,restDensity:152,phaseFraction:156},Q=32,A=64,J=1e5,h={ice:{mu:50,lambda:50},water:{stiffness:50},steam:{gasConstant:5},rubber:{mu:5,lambda:20},iron:{mu:200,lambda:300}},b={stiffness:50,restDensity:1,dynamicViscosity:.1,dt:.1,subSteps:4,fixedPointScale:J,tensileStrength:10,damageRate:2,thermalDiffusivity:.05,ambientPressure:1};function q(e){return e*S}function K(e){return e*Q}function j(e,i=0){const t=i*S;return{position:new Float32Array(e,t+n.position,3),materialType:new Uint32Array(e,t+n.materialType,1),velocity:new Float32Array(e,t+n.velocity,3),phase:new Uint32Array(e,t+n.phase,1),mass:new Float32Array(e,t+n.mass,1),volume0:new Float32Array(e,t+n.volume0,1),temperature:new Float32Array(e,t+n.temperature,1),damage:new Float32Array(e,t+n.damage,1),F:new Float32Array(e,t+n.F,12),C:new Float32Array(e,t+n.C,12),mu:new Float32Array(e,t+n.mu,1),lambda:new Float32Array(e,t+n.lambda,1),restDensity:new Float32Array(e,t+n.restDensity,1),phaseFraction:new Float32Array(e,t+n.phaseFraction,1)}}function X(e,i,t){const r=q(i),a=GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST|GPUBufferUsage.COPY_SRC;return e.createBuffer({label:"mpm-particles",size:r,usage:a})}function Z(e,i,t){const r=K(i),a=GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST|GPUBufferUsage.COPY_SRC;return e.createBuffer({label:"mpm-grid",size:r,usage:a})}const R=(e,i)=>Math.ceil(e/i);class ee{constructor(i,t={}){this.device=i,this.constants={...b,...t.constants??{}},this.iterations=t.iterations??1,this.pipelines={},this.bindGroups={},this.particleCount=0,this.gridCount=0}configure({pipelines:i,bindGroups:t}){this.pipelines={...i},this.bindGroups={...t}}setCounts({particleCount:i,gridCount:t}){this.particleCount=i??this.particleCount,this.gridCount=t??this.gridCount}step(i,t){if(!i)throw new Error("MpmDomain.step requires a command encoder");if(!this._hasPipelines())throw new Error("MpmDomain pipelines not configured");const r=R(this.particleCount,A),a=R(this.gridCount,A);for(let s=0;s<this.iterations;s+=1)this._runPass(i,"clearGrid",a),this._runPass(i,"p2g1",r),this._runPass(i,"p2g2",r),this._runPass(i,"updateGrid",a),this._runPass(i,"g2p",r),this.pipelines.copyPosition&&this.bindGroups.copyPosition&&this._runPass(i,"copyPosition",r)}_runPass(i,t,r){const a=this.pipelines[t],s=this.bindGroups[t];if(!a||!s)throw new Error(`Missing pipeline or bind group for ${t}`);const l=i.beginComputePass({label:`mpm-${t}`});l.setPipeline(a),l.setBindGroup(0,s),l.dispatchWorkgroups(r),l.end()}_hasPipelines(){return this.pipelines.clearGrid&&this.pipelines.p2g1&&this.pipelines.p2g2&&this.pipelines.updateGrid&&this.pipelines.g2p&&this.bindGroups.clearGrid&&this.bindGroups.p2g1&&this.bindGroups.p2g2&&this.bindGroups.updateGrid&&this.bindGroups.g2p}}const I=`
 const MATERIAL_BRITTLE_SOLID: u32 = 0u;
 const MATERIAL_ELASTIC_SOLID: u32 = 1u;
 const MATERIAL_LIQUID: u32 = 2u;
@@ -66,10 +60,7 @@ const T_IRON_MELT_LOW: f32 = 440.0;  // Hysteresis for solidification
 const LATENT_HEAT_MELT: f32 = 5.0;   // Scaled way down for quick melting
 const LATENT_HEAT_BOIL: f32 = 10.0;  // Scaled way down for quick boiling
 const SPECIFIC_HEAT: f32 = 1.0;      // Simplified for simulation responsiveness
-`;
-
-// Common particle struct (160 bytes, matches schema.js)
-const PARTICLE_STRUCT = /* wgsl */ `
+`,L=`
 struct Particle {
   position: vec3f,
   materialType: u32,      // BRITTLE_SOLID, ELASTIC_SOLID, LIQUID, GAS, GRANULAR
@@ -86,10 +77,7 @@ struct Particle {
   restDensity: f32,       // Derived rest density
   phaseFraction: f32,     // Order parameter (0 solid .. 1 gas via blending)
 };
-`;
-
-// Extended Cell struct (32 bytes, includes thermal fields)
-const CELL_STRUCT = /* wgsl */ `
+`,U=`
 struct Cell {
   vx: i32,           // Velocity x (fixed-point)
   vy: i32,           // Velocity y (fixed-point)
@@ -100,9 +88,7 @@ struct Cell {
   heatSource: i32,   // External heat flux (fixed-point)
   _pad: i32,         // Padding to 32 bytes
 };
-`;
-
-const CELL_ATOMIC_STRUCT = /* wgsl */ `
+`,ie=`
 struct CellAtomic {
   vx: atomic<i32>,
   vy: atomic<i32>,
@@ -113,16 +99,12 @@ struct CellAtomic {
   heatSource: atomic<i32>,
   _pad: i32,
 };
-`;
-
-const SIMULATION_UNIFORMS = /* wgsl */ `
+`,N=`
 struct SimulationUniforms {
   gravity: vec3f,
   ambientPressure: f32,
 };
-`;
-
-const FIXED_POINT_HELPERS = /* wgsl */ `
+`,G=`
 override fixed_point_multiplier: f32;
 
 fn encodeFixedPoint(f: f32) -> i32 {
@@ -132,10 +114,8 @@ fn encodeFixedPoint(f: f32) -> i32 {
 fn decodeFixedPoint(v: i32) -> f32 {
   return f32(v) / fixed_point_multiplier;
 }
-`;
-
-export const CLEAR_GRID_WGSL = /* wgsl */ `
-${CELL_STRUCT}
+`,te=`
+${U}
 
 @group(0) @binding(0) var<storage, read_write> cells: array<Cell>;
 
@@ -151,13 +131,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     cells[id.x].heatSource = 0;
   }
 }
-`;
-
-export const P2G1_WGSL = /* wgsl */ `
-${MATERIAL_CONSTANTS}
-${PARTICLE_STRUCT}
-${CELL_ATOMIC_STRUCT}
-${FIXED_POINT_HELPERS}
+`,re=`
+${I}
+${L}
+${ie}
+${G}
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read_write> cells: array<CellAtomic>;
@@ -213,11 +191,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
   }
 }
-`;
-
-export const P2G2_WGSL = /* wgsl */ `
-${MATERIAL_CONSTANTS}
-${PARTICLE_STRUCT}
+`,ae=`
+${I}
+${L}
 
 struct CellAtomic {
   vx: atomic<i32>,
@@ -230,8 +206,8 @@ struct CellAtomic {
   _pad: i32,
 };
 
-${SIMULATION_UNIFORMS}
-${FIXED_POINT_HELPERS}
+${N}
+${G}
 
 override stiffness: f32;
 override rest_density: f32;
@@ -396,13 +372,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
   }
 }
-`;
+`,se=`
+${U}
 
-export const UPDATE_GRID_WGSL = /* wgsl */ `
-${CELL_STRUCT}
-
-${SIMULATION_UNIFORMS}
-${FIXED_POINT_HELPERS}
+${N}
+${G}
 override dt: f32;
 override thermal_diffusivity: f32;
 
@@ -452,85 +426,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     cells[id.x].temperature = encodeFixedPoint(new_temp * thermal_mass);
   }
 }
-`;
-
-// Thermal diffusion kernel - applies heat diffusion on the grid
-export const DIFFUSE_TEMPERATURE_WGSL = /* wgsl */ `
-${CELL_STRUCT}
-
-${FIXED_POINT_HELPERS}
-override dt: f32;
-override thermal_diffusivity: f32;
-
-@group(0) @binding(0) var<storage, read> cells_in: array<Cell>;
-@group(0) @binding(1) var<storage, read_write> cells_out: array<Cell>;
-@group(0) @binding(2) var<uniform> init_box_size: vec3f;
-
-fn getCellIndex(x: i32, y: i32, z: i32) -> i32 {
-  return x * i32(init_box_size.y) * i32(init_box_size.z) + y * i32(init_box_size.z) + z;
-}
-
-fn getCellTemp(x: i32, y: i32, z: i32) -> f32 {
-  // Clamp to grid bounds
-  let cx = clamp(x, 0, i32(init_box_size.x) - 1);
-  let cy = clamp(y, 0, i32(init_box_size.y) - 1);
-  let cz = clamp(z, 0, i32(init_box_size.z) - 1);
-  let idx = getCellIndex(cx, cy, cz);
-  
-  let thermal_mass = decodeFixedPoint(cells_in[idx].thermalMass);
-  if (thermal_mass < 1e-6) {
-    return 0.0;
-  }
-  return decodeFixedPoint(cells_in[idx].temperature) / thermal_mass;
-}
-
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-  if (id.x >= arrayLength(&cells_in)) { return; }
-  
-  // Copy all non-temperature fields
-  cells_out[id.x].vx = cells_in[id.x].vx;
-  cells_out[id.x].vy = cells_in[id.x].vy;
-  cells_out[id.x].vz = cells_in[id.x].vz;
-  cells_out[id.x].mass = cells_in[id.x].mass;
-  cells_out[id.x].thermalMass = cells_in[id.x].thermalMass;
-  cells_out[id.x].heatSource = cells_in[id.x].heatSource;
-  
-  let thermal_mass = decodeFixedPoint(cells_in[id.x].thermalMass);
-  if (thermal_mass < 1e-6) {
-    cells_out[id.x].temperature = 0;
-    return;
-  }
-  
-  // Compute cell coordinates
-  let x: i32 = i32(id.x) / i32(init_box_size.z) / i32(init_box_size.y);
-  let y: i32 = (i32(id.x) / i32(init_box_size.z)) % i32(init_box_size.y);
-  let z: i32 = i32(id.x) % i32(init_box_size.z);
-  
-  // Get temperatures of neighbors
-  let T_center = getCellTemp(x, y, z);
-  let T_xp = getCellTemp(x + 1, y, z);
-  let T_xm = getCellTemp(x - 1, y, z);
-  let T_yp = getCellTemp(x, y + 1, z);
-  let T_ym = getCellTemp(x, y - 1, z);
-  let T_zp = getCellTemp(x, y, z + 1);
-  let T_zm = getCellTemp(x, y, z - 1);
-  
-  // Laplacian (discrete): ∇²T ≈ Σ(T_neighbor - T_center)
-  let laplacian = (T_xp + T_xm + T_yp + T_ym + T_zp + T_zm - 6.0 * T_center);
-  
-  // Heat equation: ∂T/∂t = α∇²T
-  let new_temp = T_center + thermal_diffusivity * dt * laplacian;
-  
-  // Store as T * mass
-  cells_out[id.x].temperature = encodeFixedPoint(new_temp * thermal_mass);
-}
-`;
-
-export const G2P_WGSL = /* wgsl */ `
-${MATERIAL_CONSTANTS}
-${PARTICLE_STRUCT}
-${CELL_STRUCT}
+`,le=`
+${I}
+${L}
+${U}
 
 struct MouseInteraction {
   point: vec3f,
@@ -539,7 +438,7 @@ struct MouseInteraction {
   temperature: f32,    // Heat source temperature (0 = no thermal effect)
 };
 
-${FIXED_POINT_HELPERS}
+${G}
 override dt: f32;
 
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
@@ -689,11 +588,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
   particles[id.x] = p;
 }
-`;
-
-export const COPY_POSITION_WGSL = /* wgsl */ `
-${MATERIAL_CONSTANTS}
-${PARTICLE_STRUCT}
+`,oe=`
+${I}
+${L}
 
 struct PosVelData {
   position: vec3f,
@@ -714,4 +611,4 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   posvel[id.x].velocity = p.velocity;
   posvel[id.x].temperature = p.temperature;
 }
-`;
+`;function ne(e,i=b){const t=i.tensileStrength??0,r=i.damageRate??0,a=i.restDensity??b.restDensity,s=i.stiffness??b.stiffness,l=i.dynamicViscosity??b.dynamicViscosity,d=i.dt??b.dt,u=i.fixedPointScale??b.fixedPointScale,m=P(e,te,"mpm-clear-grid"),_=P(e,re,"mpm-p2g1"),x=P(e,ae,"mpm-p2g2"),g=P(e,se,"mpm-update-grid"),y=P(e,le,"mpm-g2p"),c=P(e,oe,"mpm-copy-position");return{clearGrid:e.createComputePipeline({label:"mpm-clear-grid",layout:"auto",compute:{module:m}}),p2g1:e.createComputePipeline({label:"mpm-p2g1",layout:"auto",compute:{module:_,constants:{fixed_point_multiplier:u}}}),p2g2:e.createComputePipeline({label:"mpm-p2g2",layout:"auto",compute:{module:x,constants:{fixed_point_multiplier:u,stiffness:s,rest_density:a,dynamic_viscosity:l,dt:d,tensile_strength:t,damage_rate:r}}}),updateGrid:e.createComputePipeline({label:"mpm-update-grid",layout:"auto",compute:{module:g,constants:{fixed_point_multiplier:i.fixedPointScale,dt:i.dt,thermal_diffusivity:i.thermalDiffusivity??.1}}}),g2p:e.createComputePipeline({label:"mpm-g2p",layout:"auto",compute:{module:y,constants:{fixed_point_multiplier:i.fixedPointScale,dt:i.dt}}}),copyPosition:e.createComputePipeline({label:"mpm-copy-position",layout:"auto",compute:{module:c}})}}function ce(e,i,t){const{particleBuffer:r,gridBuffer:a,initBoxBuffer:s,realBoxBuffer:l,interactionBuffer:d,posVelBuffer:u,simUniformBuffer:m}=t,_={clearGrid:e.createBindGroup({layout:i.clearGrid.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:a}}]}),p2g1:e.createBindGroup({layout:i.p2g1.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:r}},{binding:1,resource:{buffer:a}},{binding:2,resource:{buffer:s}}]}),p2g2:e.createBindGroup({layout:i.p2g2.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:r}},{binding:1,resource:{buffer:a}},{binding:2,resource:{buffer:s}},{binding:3,resource:{buffer:m}}]}),updateGrid:e.createBindGroup({layout:i.updateGrid.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:a}},{binding:1,resource:{buffer:l}},{binding:2,resource:{buffer:s}},{binding:3,resource:{buffer:m}}]}),g2p:e.createBindGroup({layout:i.g2p.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:r}},{binding:1,resource:{buffer:a}},{binding:2,resource:{buffer:l}},{binding:3,resource:{buffer:s}},{binding:4,resource:{buffer:d}}]})};return i.copyPosition&&u&&(_.copyPosition=e.createBindGroup({layout:i.copyPosition.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:r}},{binding:1,resource:{buffer:u}}]})),_}function O(e,i,t){const r=new Float32Array(4);r.set(i.slice(0,3));const a=e.createBuffer({label:t??"vec3-uniform",size:r.byteLength,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});return e.queue.writeBuffer(a,0,r),a}function de(e,i,t){const r=new Float32Array(4);r.set(i.slice(0,3)),r[3]=t;const a=e.createBuffer({label:"mpm-sim-uniforms",size:r.byteLength,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});return e.queue.writeBuffer(a,0,r),a}function _e(e,i){const{particleCount:t,gridSize:r,posVelBuffer:a,interactionBuffer:s,constants:l,iterations:d}=i;if(!r)throw new Error("gridSize {x,y,z} is required");const u=Math.ceil(r.x)*Math.ceil(r.y)*Math.ceil(r.z),m=X(e,t),_=Z(e,u),x=O(e,[r.x,r.y,r.z],"mpm-init-box"),g=O(e,[r.x,r.y,r.z],"mpm-real-box"),y=(l==null?void 0:l.ambientPressure)??b.ambientPressure,c=de(e,[0,-.3,0],y);let o=s;if(!o){o=e.createBuffer({size:32,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST,label:"mpm-interaction-default"});const B=new Float32Array(8);B[3]=-1,e.queue.writeBuffer(o,0,B)}const p=ne(e,l),T=ce(e,p,{particleBuffer:m,gridBuffer:_,initBoxBuffer:x,realBoxBuffer:g,simUniformBuffer:c,interactionBuffer:o,posVelBuffer:a}),z=new ee(e,{constants:l,iterations:d});return z.configure({pipelines:p,bindGroups:T}),z.setCounts({particleCount:t,gridCount:u}),{domain:z,pipelines:p,bindGroups:T,buffers:{particleBuffer:m,gridBuffer:_,initBoxBuffer:x,realBoxBuffer:g,simUniformBuffer:c,interactionBuffer:o,posVelBuffer:a},dispatch:{particle:Math.ceil(t/A),grid:Math.ceil(u/A)}}}function ge(e,i,t){const r=t.byteLength??t.length;if(r>i.size)throw new Error(`Particle data (${r}) exceeds buffer size (${i.size})`);e.queue.writeBuffer(i,0,t)}const ue=()=>[1,0,0,0,0,1,0,0,0,0,1,0],pe=()=>[0,0,0,0,0,0,0,0,0,0,0,0];function xe(e){const{count:i,gridSize:t,start:r=[0,0,0],spacing:a=.65,jitter:s=0,materialType:l=w.LIQUID,mass:d=1,temperature:u=300,phase:m=null,mu:_=null,lambda:x=null,restDensity:g=1,cubeSideCount:y=null}=e;if(!i||!t)throw new Error("count and gridSize are required");let c,o,p;switch(l){case w.BRITTLE_SOLID:c=0,o=h.ice.mu,p=h.ice.lambda;break;case w.ELASTIC_SOLID:c=0,o=h.rubber.mu,p=h.rubber.lambda;break;case w.LIQUID:c=1,o=0,p=h.water.stiffness;break;case w.GAS:c=2,o=0,p=h.steam.gasConstant;break;case w.IRON:c=0,o=h.iron.mu,p=h.iron.lambda;break;case w.GRANULAR:c=0,o=100,p=100;break;default:c=1,o=0,p=50}const T=m!==null?m:c,z=_!==null?_:o,B=x!==null?x:p,D=new ArrayBuffer(q(i));let v=0;const C=y!==null?y:Math.ceil(Math.cbrt(i));for(let M=0;M<C&&v<i;M++)for(let F=0;F<C&&v<i;F++)for(let E=0;E<C&&v<i;E++){const f=j(D,v),k=Math.min(r[0]+F*a,t.x-2),$=Math.min(r[1]+M*a,t.y-2),V=Math.min(r[2]+E*a,t.z-2),H=s?(Math.random()*2-1)*s:0,W=s?(Math.random()*2-1)*s:0,Y=s?(Math.random()*2-1)*s:0;f.position.set([k+H,$+W,V+Y]),f.materialType[0]=l,f.velocity.set([0,0,0]),f.phase[0]=T,f.mass[0]=d,f.volume0[0]=d/g,f.temperature[0]=u,f.damage[0]=0,f.F.set(ue()),f.C.set(pe()),f.mu[0]=z,f.lambda[0]=B,f.restDensity[0]=g,f.phaseFraction[0]=0,v+=1}if(v<i)throw new Error(`Could not place all particles; placed ${v} of ${i}`);return D}async function fe(e,i,t){var d;const r=t*S,a=e.createBuffer({label:"mpm-particle-staging",size:r,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST}),s=e.createCommandEncoder({label:"mpm-diagnostics-copy"});s.copyBufferToBuffer(i,0,a,0,r),e.queue.submit([s.finish()]),await a.mapAsync(GPUMapMode.READ);const l=a.getMappedRange().slice(0);return a.unmap(),(d=a.destroy)==null||d.call(a),l}async function ye(e,i,t){const r=await fe(e,i,t),a=n.mass/4,s=n.velocity/4,l=new Float32Array(r);let d=0,u=0,m=0,_=0;for(let x=0;x<t;x+=1){const g=S/4*x,y=l[g+a],c=l[g+s+0],o=l[g+s+1],p=l[g+s+2];d+=y,u+=y*c,m+=y*o,_+=y*p}return{mass:d,momentum:[u,m,_]}}export{S as M,ye as a,xe as c,_e as s,ge as u};

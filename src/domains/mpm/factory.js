@@ -2,7 +2,8 @@ import {
   createParticleBuffer,
   createGridBuffer,
   particleBufferSize,
-  MPM_WORKGROUP_SIZE
+  MPM_WORKGROUP_SIZE,
+  DEFAULT_SIMULATION_CONSTANTS
 } from "./schema.js";
 import { createMpmPipelines, createMpmBindGroups } from "./pipelines.js";
 import { MpmDomain } from "./domain.js";
@@ -13,6 +14,19 @@ function createVec3UniformBuffer(device, vec3, label) {
   data.set(vec3.slice(0, 3));
   const buffer = device.createBuffer({
     label: label ?? "vec3-uniform",
+    size: data.byteLength,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+  });
+  device.queue.writeBuffer(buffer, 0, data);
+  return buffer;
+}
+
+function createSimUniformBuffer(device, gravityVec3, ambientPressure) {
+  const data = new Float32Array(4);
+  data.set(gravityVec3.slice(0, 3));
+  data[3] = ambientPressure;
+  const buffer = device.createBuffer({
+    label: "mpm-sim-uniforms",
     size: data.byteLength,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
   });
@@ -47,7 +61,8 @@ export function setupMpmDomain(device, options) {
   const gridBuffer = createGridBuffer(device, gridCount);
   const initBoxBuffer = createVec3UniformBuffer(device, [gridSize.x, gridSize.y, gridSize.z], "mpm-init-box");
   const realBoxBuffer = createVec3UniformBuffer(device, [gridSize.x, gridSize.y, gridSize.z], "mpm-real-box");
-  const simUniformBuffer = createVec3UniformBuffer(device, [0, -0.3, 0], "mpm-sim-uniforms");
+  const ambientPressure = constants?.ambientPressure ?? DEFAULT_SIMULATION_CONSTANTS.ambientPressure;
+  const simUniformBuffer = createSimUniformBuffer(device, [0, -0.3, 0], ambientPressure);
 
   // Default interaction buffer if not provided (radius = -1)
   let effectiveInteractionBuffer = interactionBuffer;

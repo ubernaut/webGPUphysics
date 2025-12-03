@@ -12,6 +12,11 @@ const toggleBtn = document.getElementById("toggleBtn");
 const resetBtn = document.getElementById("resetBtn");
 const errorEl = document.getElementById("error");
 
+const ELEMENTS = [
+  "Hydrogen", "Oxygen", "Sodium", "Potassium", "Magnesium",
+  "Aluminum", "Silicon", "Calcium", "Titanium", "Iron", "Lead"
+];
+
 let sim = null;
 let running = true;
 let lastCheck = 0;
@@ -59,9 +64,20 @@ async function setup() {
 
     const particleCount = 4000;
     const gridSize = { x: 32, y: 32, z: 32 };
+    const params = new URLSearchParams(window.location.search);
+    const materialName = params.get("material") || "Oxygen";
+    const matIndex = Math.max(0, ELEMENTS.indexOf(materialName));
 
     setStatus("creating MLS-MPM…");
-    const blockOptions = { start: [2, 2, 2], gridSize, jitter: 0.5, spacing: 0.65 };
+    const sideCount = Math.ceil(Math.cbrt(particleCount));
+    const blockOptions = {
+      start: [2, 2, 2],
+      gridSize,
+      jitter: 0.25,
+      spacing: 0.65,
+      materialType: matIndex,
+      cubeSideCount: sideCount
+    };
     
     // Sub-stepping
     const targetDt = 0.05;

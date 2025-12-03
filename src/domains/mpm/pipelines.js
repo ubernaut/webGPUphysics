@@ -14,6 +14,14 @@ import {
 import { DEFAULT_SIMULATION_CONSTANTS } from "./schema.js";
 
 export function createMpmPipelines(device, constants = DEFAULT_SIMULATION_CONSTANTS) {
+  const tensileStrength = constants.tensileStrength ?? 0;
+  const damageRate = constants.damageRate ?? 0;
+  const restDensity = constants.restDensity ?? DEFAULT_SIMULATION_CONSTANTS.restDensity;
+  const stiffness = constants.stiffness ?? DEFAULT_SIMULATION_CONSTANTS.stiffness;
+  const dynamicViscosity = constants.dynamicViscosity ?? DEFAULT_SIMULATION_CONSTANTS.dynamicViscosity;
+  const dt = constants.dt ?? DEFAULT_SIMULATION_CONSTANTS.dt;
+  const fixedPointScale = constants.fixedPointScale ?? DEFAULT_SIMULATION_CONSTANTS.fixedPointScale;
+
   const clearGridModule = createShaderModule(device, CLEAR_GRID_WGSL, "mpm-clear-grid");
   const p2g1Module = createShaderModule(device, P2G1_WGSL, "mpm-p2g1");
   const p2g2Module = createShaderModule(device, P2G2_WGSL, "mpm-p2g2");
@@ -33,7 +41,7 @@ export function createMpmPipelines(device, constants = DEFAULT_SIMULATION_CONSTA
       compute: {
         module: p2g1Module,
         constants: {
-          fixed_point_multiplier: constants.fixedPointScale
+          fixed_point_multiplier: fixedPointScale
         }
       }
     }),
@@ -43,13 +51,13 @@ export function createMpmPipelines(device, constants = DEFAULT_SIMULATION_CONSTA
       compute: {
         module: p2g2Module,
         constants: {
-          fixed_point_multiplier: constants.fixedPointScale,
-          stiffness: constants.stiffness,
-          rest_density: constants.restDensity,
-          dynamic_viscosity: constants.dynamicViscosity,
-          dt: constants.dt,
-          tensile_strength: constants.tensileStrength,
-          damage_rate: constants.damageRate
+          fixed_point_multiplier: fixedPointScale,
+          stiffness,
+          rest_density: restDensity,
+          dynamic_viscosity: dynamicViscosity,
+          dt,
+          tensile_strength: tensileStrength,
+          damage_rate: damageRate
         }
       }
     }),
@@ -103,7 +111,8 @@ export function createMpmBindGroups(device, pipelines, buffers) {
     initBoxBuffer,
     realBoxBuffer,
     interactionBuffer,
-    posVelBuffer
+    posVelBuffer,
+    simUniformBuffer
   } = buffers;
 
   const bindGroups = {
@@ -124,7 +133,8 @@ export function createMpmBindGroups(device, pipelines, buffers) {
       entries: [
         { binding: 0, resource: { buffer: particleBuffer } },
         { binding: 1, resource: { buffer: gridBuffer } },
-        { binding: 2, resource: { buffer: initBoxBuffer } }
+        { binding: 2, resource: { buffer: initBoxBuffer } },
+        { binding: 3, resource: { buffer: simUniformBuffer } }
       ]
     }),
     updateGrid: device.createBindGroup({
@@ -133,7 +143,7 @@ export function createMpmBindGroups(device, pipelines, buffers) {
         { binding: 0, resource: { buffer: gridBuffer } },
         { binding: 1, resource: { buffer: realBoxBuffer } },
         { binding: 2, resource: { buffer: initBoxBuffer } },
-        { binding: 3, resource: { buffer: buffers.simUniformBuffer } }
+        { binding: 3, resource: { buffer: simUniformBuffer } }
       ]
     }),
     g2p: device.createBindGroup({

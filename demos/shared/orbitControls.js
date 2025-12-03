@@ -89,6 +89,14 @@ class OrbitCamera {
     this.target[2] += (xz * dx + yz * dy) * speed;
   }
 
+  setTarget(target) {
+    this.target = [...target];
+  }
+
+  setRadius(radius) {
+    this.radius = Math.min(this.maxRadius, Math.max(this.minRadius, radius));
+  }
+
   getViewProj(aspect) {
     const fov = Math.PI / 4;
     const near = 0.1;

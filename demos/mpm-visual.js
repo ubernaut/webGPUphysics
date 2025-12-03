@@ -27,8 +27,24 @@ let animationFrameId;
 let currentParticleCount = 0;
 let initializing = false;
 let initialOrientation = null;
+let useDeviceOrientation = false;  // Flag to track if we're using device orientation
+let gui;
+let temperatureController;
 
-const MATERIAL_NAMES = ['Ice (Brittle)', 'Rubber (Elastic)', 'Water (Liquid)', 'Steam (Gas)'];
+// Element list (materialType encodes element ID, phase will be computed in shaders)
+const ELEMENTS = [
+  { key: "Hydrogen", id: 0 },
+  { key: "Oxygen", id: 1 },
+  { key: "Sodium", id: 2 },
+  { key: "Potassium", id: 3 },
+  { key: "Magnesium", id: 4 },
+  { key: "Aluminum", id: 5 },
+  { key: "Silicon", id: 6 },
+  { key: "Calcium", id: 7 },
+  { key: "Titanium", id: 8 },
+  { key: "Iron", id: 9 },
+  { key: "Lead", id: 10 }
+];
 
 // Parse URL query parameters
 function getQueryParam(name, defaultValue) {
@@ -47,29 +63,23 @@ const params = {
   gridSizeX: 64,
   gridSizeY: 64,
   gridSizeZ: 64,
-  spacing: 1.0,        // Increased from 0.65 for better stability
-  jitter: 0.1,         // Reduced from 0.5 (solids need regular packing)
+  spacing: 1.0,
+  jitter: 0.1,
   
-  // Material selection
-  materialType: 2, // 0=Ice, 1=Rubber, 2=Water, 3=Steam
+  // Material selection (two elements)
+  materialA: "Oxygen",
+  materialB: "Iron",
   temperature: 300.0,
-  
-  // Scene presets
-  sceneType: 'single', // 'single' or 'mixed'
   
   // Physics
   dt: 0.1,
+  gravity: -0.3,  // Gravity Y component (negative = down)
+  ambientPressure: 1.0, // Dimensionless reference ambient pressure
   stiffness: 50.0,
   restDensity: 1.0,
   dynamicViscosity: 0.1,
   iterations: 1,
   fixedPointScale: 1e5,
-  
-  // Brittle solid parameters
-  tensileStrength: 5.0,
-  damageRate: 5.0,
-  mu: 50.0,       // Shear modulus for solids (soft for stability)
-  lambda: 50.0,   // Bulk modulus for solids (soft for stability)
   
   // Rendering
   visualRadius: 0.2, // For particles
@@ -78,12 +88,12 @@ const params = {
   // Interaction
   interactionRadius: 9.0,
   interactionX: 32,
-  interactionY: 0,
+  interactionY: 10,  // Elevated so sphere is inside the fluid
   interactionZ: 32,
   interactionActive: true,
   
   // Thermal interaction (heat source sphere)
-  heatSourceTemp: 0,  // 0 = no thermal effect, >0 = heat source temperature
+  heatSourceTemp: 400,  // Heat source temperature (K). >1 = active. 400K will melt ice, 200K will freeze water
 };
 
 toggleBtn.addEventListener("click", () => {
@@ -99,6 +109,26 @@ function setError(err) {
   running = false;
   toggleBtn.disabled = true;
 }
+
+function addTooltip(controller, text) {
+  if (controller?.domElement) {
+    controller.domElement.title = text;
+  }
+  return controller;
+}
+
+function applyTooltips(map) {
+  if (!gui) return;
+  gui.controllersRecursive().forEach((c) => {
+    const key = c._property || c.property || c._name;
+    const tip = map[key];
+    if (tip) {
+      addTooltip(c, tip);
+    }
+  });
+}
+
+// Phase-invariant material selection is driven by element choice; properties derive from temperature/pressure in shaders.
 
 function resize() {
   const devicePixelRatio = window.devicePixelRatio || 1;
@@ -351,19 +381,6 @@ async function initSimulation() {
     const particleCount = params.particleCount;
     const gridSize = { x: params.gridSizeX, y: params.gridSizeY, z: params.gridSizeZ };
     
-    // Block options with material type
-    const blockOptions = { 
-        start: [2, 2, 2], 
-        gridSize, 
-        jitter: params.jitter, 
-        spacing: params.spacing,
-        temperature: params.temperature,
-        restDensity: params.restDensity,
-        materialType: params.materialType,
-        mu: params.mu,
-        lambda: params.lambda
-    };
-
     // Sub-stepping for stability
     // Fix physics step to a stable value (e.g. 5ms) and iterate to match requested dt
     const physics_dt = 0.005;
@@ -376,8 +393,9 @@ async function initSimulation() {
         dynamicViscosity: params.dynamicViscosity,
         dt: physics_dt,
         fixedPointScale: params.fixedPointScale,
-        tensileStrength: params.tensileStrength,
-        damageRate: params.damageRate
+        tensileStrength: 0,
+        damageRate: 0,
+        ambientPressure: params.ambientPressure
     };
 
     // Create buffers
@@ -401,21 +419,39 @@ async function initSimulation() {
         constants
     });
 
-    // Initialize particles based on scene type
-    let data;
-    if (params.sceneType === 'mixed') {
-        // Mixed scene: Ice block above water pool
-        data = mpm.createMixedMaterialData({
-            totalCount: particleCount,
-            gridSize,
-            spacing: params.spacing,
-            jitter: params.jitter,
-            restDensity: params.restDensity
-        });
-    } else {
-        // Single material
-        data = mpm.createBlockParticleData({ count: particleCount, gridSize, ...blockOptions });
-    }
+    // Initialize two material blocks (each 50% of particles)
+    const halfCount = Math.floor(particleCount / 2);
+    const remaining = particleCount - halfCount;
+    const sideA = Math.ceil(Math.cbrt(halfCount));
+    const sideB = Math.ceil(Math.cbrt(remaining));
+    const matA = ELEMENTS.find(e => e.key === params.materialA) ?? ELEMENTS[0];
+    const matB = ELEMENTS.find(e => e.key === params.materialB) ?? ELEMENTS[1] ?? ELEMENTS[0];
+    const buf = new ArrayBuffer(particleCount * mpm.MPM_PARTICLE_STRIDE);
+    const blockA = mpm.createBlockParticleData({
+        count: halfCount,
+        gridSize,
+        start: [2, 2, 2],
+        spacing: params.spacing,
+        jitter: params.jitter,
+        temperature: params.temperature,
+        restDensity: params.restDensity,
+        materialType: matA.id,
+        cubeSideCount: sideA
+    });
+    const blockB = mpm.createBlockParticleData({
+        count: remaining,
+        gridSize,
+        start: [gridSize.x * 0.4, gridSize.y * 0.4, gridSize.z * 0.4],
+        spacing: params.spacing,
+        jitter: params.jitter,
+        temperature: params.temperature,
+        restDensity: params.restDensity,
+        materialType: matB.id,
+        cubeSideCount: sideB
+    });
+    new Uint8Array(buf, 0, blockA.byteLength).set(new Uint8Array(blockA));
+    new Uint8Array(buf, blockA.byteLength, blockB.byteLength).set(new Uint8Array(blockB));
+    const data = buf;
     mpm.uploadParticleData(device, setup.buffers.particleBuffer, data);
 
     domain = setup.domain;
@@ -458,7 +494,7 @@ async function setup() {
     await initSimulation();
 
     // GUI Setup
-    const gui = new window.lil.GUI({ title: "MLS-MPM Controls" });
+    gui = new window.lil.GUI({ title: "MLS-MPM Controls" });
     
     // Collapse on mobile
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768;
@@ -466,118 +502,134 @@ async function setup() {
         gui.close();
     }
 
-    gui.add(params, "renderMode", ['Particles', 'Fluid']).name("Render Mode");
+    addTooltip(gui.add(params, "renderMode", ['Particles', 'Fluid']).name("Render Mode"),
+      "Choose between particle instancing or screen-space fluid rendering");
     
     const viewFolder = gui.addFolder("Visuals");
-    viewFolder.add(params, "visualRadius", 0.05, 1.0, 0.05).name("Particle Radius");
-    viewFolder.add(params, "fluidRadius", 0.05, 1.0, 0.05).name("Fluid Radius");
+    addTooltip(viewFolder.add(params, "visualRadius", 0.05, 1.0, 0.05).name("Particle Radius"),
+      "Sphere radius for particle rendering (visual only)");
+    addTooltip(viewFolder.add(params, "fluidRadius", 0.05, 3.0, 0.05).name("Fluid Radius"),
+      "Splat radius for screen-space fluid rendering");
 
     const simFolder = gui.addFolder("Simulation");
-    simFolder.add(params, "particleCount", 100, 800000, 1000).name("Particle Count").onFinishChange(initSimulation);
+    addTooltip(simFolder.add(params, "particleCount", 100, 100000, 1000).name("Particle Count").onFinishChange(initSimulation),
+      "Total number of particles spawned (higher = heavier GPU load)");
     
-    // Scene Type Selection
-    const sceneOptions = { 'Single Material': 'single', 'Ice + Water': 'mixed' };
-    simFolder.add(params, "sceneType", sceneOptions).name("Scene Type").onChange(initSimulation);
+    // Material selection (phase-invariant elements)
+    const elementOptions = {};
+    ELEMENTS.forEach(el => { elementOptions[el.key] = el.key; });
+    addTooltip(simFolder.add(params, "materialA", elementOptions).name("Element A").onChange(initSimulation),
+      "Element for first spawn block (50% of particles)");
+    addTooltip(simFolder.add(params, "materialB", elementOptions).name("Element B").onChange(initSimulation),
+      "Element for second spawn block (50% of particles)");
     
-    // Material Type Selection (for single material mode)
-    const materialOptions = { 'Ice (Brittle)': 0, 'Rubber (Elastic)': 1, 'Water (Liquid)': 2, 'Steam (Gas)': 3 };
-    simFolder.add(params, "materialType", materialOptions).name("Material Type").onChange((val) => {
-        // Update defaults based on material - IMPORTANT: solids need more spacing and less jitter
-        switch (parseInt(val)) {
-            case 0: // Ice (needs regular packing, low jitter)
-                params.temperature = 260;
-                params.mu = 50;
-                params.lambda = 50;
-                params.stiffness = 50;
-                params.tensileStrength = 5;
-                params.damageRate = 5;
-                params.spacing = 1.2;    // More spacing for solids
-                params.jitter = 0.0;     // No jitter for solids (regular crystal lattice)
-                params.restDensity = 0.92; // Ice density
-                break;
-            case 1: // Rubber (soft elastic, needs regular packing)
-                params.temperature = 300;
-                params.mu = 5;
-                params.lambda = 20;
-                params.stiffness = 50;
-                params.spacing = 1.2;
-                params.jitter = 0.0;
-                params.restDensity = 1.0;
-                break;
-            case 2: // Water (can have more jitter)
-                params.temperature = 300;
-                params.stiffness = 50;
-                params.spacing = 0.8;
-                params.jitter = 0.3;
-                params.restDensity = 1.0;
-                break;
-            case 3: // Steam (sparse)
-                params.temperature = 400;
-                params.stiffness = 50;
-                params.spacing = 2.0;    // Very sparse for gas
-                params.jitter = 0.5;
-                params.restDensity = 0.1;
-                break;
-        }
+    // Box Size - update camera target and interaction sphere when changed
+    function updateCameraAndInteraction() {
+        // Center the camera on the grid
+        const centerX = params.gridSizeX / 2;
+        const centerY = params.gridSizeY / 2;
+        const centerZ = params.gridSizeZ / 2;
+        camera.setTarget([centerX, centerY, centerZ]);
+        
+        // Adjust camera radius to fit the box
+        const maxDim = Math.max(params.gridSizeX, params.gridSizeY, params.gridSizeZ);
+        camera.setRadius(maxDim * 1.8);
+        
+        // Center the interaction sphere
+        params.interactionX = centerX;
+        params.interactionY = centerY * 0.3; // Keep it in lower part of the volume
+        params.interactionZ = centerZ;
         gui.controllersRecursive().forEach(c => c.updateDisplay());
+        
         initSimulation();
-    });
+    }
     
-    // Box Size
-    simFolder.add(params, "gridSizeX", 16, 256, 16).name("Box X").onFinishChange(initSimulation);
-    simFolder.add(params, "gridSizeY", 16, 256, 16).name("Box Y").onFinishChange(initSimulation);
-    simFolder.add(params, "gridSizeZ", 16, 256, 16).name("Box Z").onFinishChange(initSimulation);
+    simFolder.add(params, "gridSizeX", 16, 256, 16).name("Box X").onFinishChange(updateCameraAndInteraction);
+    simFolder.add(params, "gridSizeY", 16, 256, 16).name("Box Y").onFinishChange(updateCameraAndInteraction);
+    simFolder.add(params, "gridSizeZ", 16, 256, 16).name("Box Z").onFinishChange(updateCameraAndInteraction);
     
-    simFolder.add(params, "spacing", 0.1, 2.0, 0.05).name("Spacing").onFinishChange(initSimulation);
-    simFolder.add(params, "jitter", 0.0, 1.0, 0.1).name("Jitter").onFinishChange(initSimulation);
-    simFolder.add(params, "temperature", 0, 500, 1).name("Temperature (K)").onFinishChange(initSimulation);
+    addTooltip(simFolder.add(params, "spacing", 0.1, 2.5, 0.05).name("Spacing").onFinishChange(initSimulation),
+      "Initial particle pitch (grid units); smaller = denser packing");
+    addTooltip(simFolder.add(params, "jitter", 0.0, 1.0, 0.05).name("Jitter").onFinishChange(initSimulation),
+      "Random perturbation of initial positions to break symmetry");
+    temperatureController = addTooltip(simFolder.add(params, "temperature", 0, 5_000, 1).name("Temperature (K)").onFinishChange(initSimulation),
+      "Initial particle temperature for the selected material");
     
     const physFolder = gui.addFolder("Physics Constants");
-    physFolder.add(params, "dt", 0.001, 0.2, 0.001).name("Time Step (dt)").onChange(() => initSimulation());
-    physFolder.add(params, "stiffness", 0.1, 100.0, 0.1).name("Stiffness").onFinishChange(initSimulation);
-    physFolder.add(params, "restDensity", 0.1, 10.0, 0.1).onFinishChange(initSimulation);
-    physFolder.add(params, "dynamicViscosity", 0.0, 5.0, 0.01).onFinishChange(initSimulation);
+    addTooltip(physFolder.add(params, "dt", 0.001, 0.2, 0.001).name("Time Step (dt)").onChange(() => initSimulation()),
+      "Simulation timestep (seconds) per sub-step; smaller = more stable");
+    addTooltip(physFolder.add(params, "gravity", -20, 20, 0.1).name("Gravity (Y)"),
+      "Gravity acceleration along Y (negative = downward)");
+    addTooltip(physFolder.add(params, "ambientPressure", 0.0, 5.0, 0.05).name("Ambient Pressure"),
+      "Ambient pressure baseline applied to fluids/gases (dimensionless)");
+    addTooltip(physFolder.add(params, "stiffness", 0.1, 100.0, 0.1).name("Stiffness").onFinishChange(initSimulation),
+      "Fluid bulk modulus for Tait EOS (affects compressibility)");
+    addTooltip(physFolder.add(params, "restDensity", 0.1, 10.0, 0.1).onFinishChange(initSimulation),
+      "Target rest density for mass/volume and pressure calculations");
+    addTooltip(physFolder.add(params, "dynamicViscosity", 0.0, 5.0, 0.01).onFinishChange(initSimulation),
+      "Viscosity term applied to fluids (damps shear/velocity gradients)");
     
     // Solid material parameters
-    const solidFolder = gui.addFolder("Solid Properties");
-    solidFolder.add(params, "mu", 1, 5000, 10).name("Shear Modulus (μ)").onFinishChange(initSimulation);
-    solidFolder.add(params, "lambda", 1, 5000, 10).name("Bulk Modulus (λ)").onFinishChange(initSimulation);
-    solidFolder.add(params, "tensileStrength", 0.1, 100, 0.5).name("Tensile Strength").onFinishChange(initSimulation);
-    solidFolder.add(params, "damageRate", 0.1, 10, 0.1).name("Damage Rate").onFinishChange(initSimulation);
-    
     const interactFolder = gui.addFolder("Interaction Sphere");
-    interactFolder.add(params, "interactionActive").name("Active");
-    interactFolder.add(params, "interactionRadius", 0.1, 20.0).name("Radius");
-    interactFolder.add(params, "interactionX", 0, 100).name("X");
-    interactFolder.add(params, "interactionY", 0, 100).name("Y");
-    interactFolder.add(params, "interactionZ", 0, 100).name("Z");
-    interactFolder.add(params, "heatSourceTemp", 0, 500, 10).name("Heat Source (K)");
+    addTooltip(interactFolder.add(params, "interactionActive").name("Active"),
+      "Enable or disable the interaction sphere");
+    addTooltip(interactFolder.add(params, "interactionRadius", 0.1, 20.0).name("Radius"),
+      "Sphere radius for collision/thermal interaction");
+    addTooltip(interactFolder.add(params, "interactionX", 0, 100).name("X"),
+      "Sphere center X (grid units)");
+    addTooltip(interactFolder.add(params, "interactionY", 0, 100).name("Y"),
+      "Sphere center Y (grid units)");
+    addTooltip(interactFolder.add(params, "interactionZ", 0, 100).name("Z"),
+      "Sphere center Z (grid units)");
+    addTooltip(interactFolder.add(params, "heatSourceTemp", 0, 5_000, 1).name("Heat Source (K)"),
+      "Temperature of the heat/cool sphere (0 disables thermal effect)");
     
-    gui.add({ reset: initSimulation }, "reset").name("Reset Simulation");
-    gui.add({ calibrate: () => initialOrientation = null }, "calibrate").name("Calibrate Sensors");
+    addTooltip(gui.add({ reset: initSimulation }, "reset").name("Reset Simulation"),
+      "Rebuild buffers and restart the current scene");
+    addTooltip(gui.add({ calibrate: () => initialOrientation = null }, "calibrate").name("Calibrate Sensors"),
+      "Reset device-orientation baseline for gravity control");
 
     statusEl.textContent = "running";
 
-    // Mouse Interaction
-    let dragging = false;
+    // Mouse Interaction for Sphere
+    // Middle mouse button (button 1) drags sphere on XZ plane
+    // Ctrl + Scroll changes sphere Y position
+    let sphereDragging = false;
     let planeY = 0;
     
     canvas.addEventListener('pointerdown', e => {
-        if(e.button === 0 && e.shiftKey) { // Shift+Click to drag sphere
-            dragging = true;
+        if(e.button === 1 && params.interactionActive) { // Middle click to drag sphere
+            sphereDragging = true;
             planeY = params.interactionY;
-            e.stopImmediatePropagation(); // Prevent orbit
+            e.preventDefault();
+            e.stopImmediatePropagation();
         }
     });
-    window.addEventListener('pointerup', () => dragging = false);
+    window.addEventListener('pointerup', () => sphereDragging = false);
+    
+    // Ctrl + Scroll to change sphere Y
+    canvas.addEventListener('wheel', e => {
+        if (e.ctrlKey && params.interactionActive) {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? -1 : 1;
+            params.interactionY = Math.max(0, Math.min(params.gridSizeY, params.interactionY + delta));
+            gui.controllersRecursive().forEach(c => c.updateDisplay());
+        }
+    }, { passive: false });
     
     // Device Orientation
     window.addEventListener("deviceorientation", (event) => {
         if (!buffers || !buffers.simUniformBuffer) return;
         
+        // Only use device orientation if we have valid values
+        if (event.beta === null || event.gamma === null) return;
+        
         if (!initialOrientation) {
             initialOrientation = { beta: event.beta, gamma: event.gamma };
         }
+        
+        // Mark that we're using device orientation (disables gravity slider)
+        useDeviceOrientation = true;
 
         const g = 0.3;
         // Calculate relative tilt
@@ -600,11 +652,12 @@ async function setup() {
         
         const data = new Float32Array(4);
         data.set([gx, gy, gz], 0); 
+        data[3] = params.ambientPressure;
         device.queue.writeBuffer(buffers.simUniformBuffer, 0, data);
     }, true);
 
     canvas.addEventListener('pointermove', e => {
-        if (dragging && params.interactionActive) {
+        if (sphereDragging && params.interactionActive) {
             // Raycast logic
             const rect = canvas.getBoundingClientRect();
             const x = (e.clientX - rect.left) / rect.width * 2 - 1;
@@ -670,6 +723,16 @@ async function setup() {
       if (initializing) {
         animationFrameId = requestAnimationFrame(frame);
         return;
+      }
+
+      // Update Gravity Uniform (if no device orientation is active)
+      if (buffers && buffers.simUniformBuffer && !useDeviceOrientation) {
+          const gData = new Float32Array(4);
+          gData[0] = 0;              // gx
+          gData[1] = params.gravity; // gy (negative = down)
+          gData[2] = 0;              // gz
+          gData[3] = params.ambientPressure;
+          device.queue.writeBuffer(buffers.simUniformBuffer, 0, gData);
       }
 
       // Update Interaction Buffer

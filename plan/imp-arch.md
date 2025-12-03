@@ -198,6 +198,13 @@ Ice and other crystalline solids require special handling that differs from Neo-
    - **Softened Parameters**: Use E/1000 for visual "ice" that's stable
    - **Hybrid Solver**: Switch to rigid body/constraint solver when phase=solid
 
+## Emergent Phase / Order Parameter Plan (Plan B)
+- **Element Identity:** `materialType` encodes element (H, O, Na, K, Mg, Al, Si, Ca, Ti, Fe, Pb, etc.); phase is inferred from state, not by mutating `materialType`.
+- **State Fields:** Temperature, density/pressure, plus a phase fraction/order parameter to blend solid/liquid/gas; latent heat handled via energy budget instead of hard switches.
+- **Property Derivation:** Per element, derive densities (thermal expansion), bulk/shear moduli (solids), bulk + viscosity (liquids), gas constant (gases) each step from current state; clamp/soften for stability (target dt ≈ 0.1s).
+- **Constitutive Blending:** Stress model chooses solid/liquid/gas branch based on phase fraction; per-material branches remain only for microstructured/anisotropic materials (wood, carbon fiber).
+- **Future Coupling:** Extend element tables with atomic mass, heat capacity, charge/ionization, conductivity, reaction energetics to support chemistry, EM, and radioactivity. Phase fraction can feed reaction/EM property changes.
+
 ## Compute Pipelines (MPM Sequence)
 
 1.  **Clear Grid:** Zero out mass/momentum grid buffers.

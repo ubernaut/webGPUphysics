@@ -144,7 +144,7 @@ struct VertexOutput {
     @location(0) uv: vec2f, 
 }
 struct FragmentInput { @location(0) uv: vec2f, }
-struct PosVel { position: vec3f, v: vec3f, }
+struct PosVel { position: vec3f, materialType: f32, velocity: vec3f, temperature: f32, }
 @group(0) @binding(0) var<storage> particles: array<PosVel>;
 @group(0) @binding(1) var<uniform> uniforms: RenderUniforms;
 
@@ -170,6 +170,63 @@ fn fs(input: FragmentInput) -> @location(0) vec4f {
     var thickness: f32 = sqrt(1.0 - r2);
     let particle_alpha = 0.05;
     return vec4f(vec3f(particle_alpha * thickness), 1.0);
+}
+`;
+
+const MATERIAL_MAP_WGSL = /* wgsl */ `
+struct RenderUniforms {
+    texel_size: vec2f, sphere_size: f32,
+    inv_projection_matrix: mat4x4f, projection_matrix: mat4x4f,
+    view_matrix: mat4x4f, inv_view_matrix: mat4x4f,
+}
+struct VertexOutput {
+    @builtin(position) position: vec4f, 
+    @location(0) uv: vec2f, 
+    @location(1) view_position: vec3f,
+    @location(2) @interpolate(flat) materialType: f32,
+}
+struct FragmentInput { 
+    @location(0) uv: vec2f, 
+    @location(1) view_position: vec3f,
+    @location(2) @interpolate(flat) materialType: f32,
+}
+struct FragmentOutput {
+    @location(0) frag_color: vec4f,
+    @builtin(frag_depth) frag_depth: f32,
+}
+struct PosVel { position: vec3f, materialType: f32, velocity: vec3f, temperature: f32, }
+@group(0) @binding(0) var<storage> particles: array<PosVel>;
+@group(0) @binding(1) var<uniform> uniforms: RenderUniforms;
+
+@vertex
+fn vs(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) instance_index: u32) -> VertexOutput {
+    var corner_positions = array(
+        vec2(0.5, 0.5), vec2(0.5, -0.5), vec2(-0.5, -0.5),
+        vec2(0.5, 0.5), vec2(-0.5, -0.5), vec2(-0.5, 0.5),
+    );
+    let corner = vec3(corner_positions[vertex_index] * uniforms.sphere_size, 0.0);
+    let uv = corner_positions[vertex_index] + 0.5;
+    let p = particles[instance_index];
+    let view_position = (uniforms.view_matrix * vec4f(p.position, 1.0)).xyz;
+    let out_position = uniforms.projection_matrix * vec4f(view_position + corner, 1.0);
+    return VertexOutput(out_position, uv, view_position, p.materialType);
+}
+
+@fragment
+fn fs(input: FragmentInput) -> FragmentOutput {
+    var out: FragmentOutput;
+    var normalxy: vec2f = input.uv * 2.0 - 1.0;
+    var r2: f32 = dot(normalxy, normalxy);
+    if (r2 > 1.0) { discard; }
+    var normalz = sqrt(1.0 - r2);
+    var normal = vec3(normalxy, normalz);
+    var radius = uniforms.sphere_size / 2.0;
+    var real_view_pos: vec4f = vec4f(input.view_position + normal * radius, 1.0);
+    var clip_space_pos: vec4f = uniforms.projection_matrix * real_view_pos;
+    out.frag_depth = clip_space_pos.z / clip_space_pos.w;
+    // Output material type (stored in R channel)
+    out.frag_color = vec4f(input.materialType, 0.0, 0.0, 1.0);
+    return out;
 }
 `;
 
@@ -203,6 +260,7 @@ const FLUID_WGSL = /* wgsl */ `
 @group(0) @binding(1) var texture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> uniforms: RenderUniforms;
 @group(0) @binding(3) var thickness_texture: texture_2d<f32>;
+@group(0) @binding(4) var material_texture: texture_2d<f32>;
 
 struct RenderUniforms {
     texel_size: vec2f, sphere_size: f32,
@@ -216,6 +274,14 @@ struct FragmentOutput {
     @builtin(frag_depth) depth: f32,
 }
 
+// Material type constants
+const MATERIAL_BRITTLE_SOLID: f32 = 0.0;  // Ice
+const MATERIAL_ELASTIC_SOLID: f32 = 1.0;  // Rubber
+const MATERIAL_LIQUID: f32 = 2.0;          // Water
+const MATERIAL_GAS: f32 = 3.0;             // Steam
+const MATERIAL_GRANULAR: f32 = 4.0;        // Sand
+const MATERIAL_IRON: f32 = 5.0;            // Iron
+
 fn computeViewPosFromUVDepth(tex_coord: vec2f, depth: f32) -> vec3f {
     var ndc: vec4f = vec4f(tex_coord.x * 2.0 - 1.0, 1.0 - 2.0 * tex_coord.y, 0.0, 1.0);
     ndc.z = -uniforms.projection_matrix[2].z + uniforms.projection_matrix[3].z / depth;
@@ -227,6 +293,29 @@ fn computeViewPosFromUVDepth(tex_coord: vec2f, depth: f32) -> vec3f {
 fn getViewPosFromTexCoord(tex_coord: vec2f, iuv: vec2f) -> vec3f {
     var depth: f32 = abs(textureLoad(texture, vec2u(iuv), 0).x);
     return computeViewPosFromUVDepth(tex_coord, depth);
+}
+
+fn getMaterialColor(materialType: f32) -> vec3f {
+    // Return base diffuse color based on material type
+    if (materialType < 0.5) {
+        // Ice (Brittle Solid) - Light cyan/blue
+        return vec3f(0.7, 0.9, 1.0);
+    } else if (materialType < 1.5) {
+        // Rubber (Elastic Solid) - Red
+        return vec3f(0.9, 0.2, 0.2);
+    } else if (materialType < 2.5) {
+        // Water (Liquid) - Blue
+        return vec3f(0.1, 0.6, 0.9);
+    } else if (materialType < 3.5) {
+        // Steam (Gas) - White/light gray
+        return vec3f(0.9, 0.9, 0.95);
+    } else if (materialType < 4.5) {
+        // Granular (Sand) - Tan/brown
+        return vec3f(0.76, 0.70, 0.50);
+    } else {
+        // Iron - Dark gray
+        return vec3f(0.3, 0.3, 0.35);
+    }
 }
 
 @fragment
@@ -255,10 +344,23 @@ fn fs(input: FragmentInput) -> FragmentOutput {
     var H = normalize(lightDir - rayDir);
     var specular = pow(max(0.0, dot(H, normal)), 250.0);
     
+    // Get material type from texture
+    var materialType = textureLoad(material_texture, vec2u(input.iuv), 0).r;
+    
     var density = 0.5; // Reduced density for more transparency
     var thickness = textureLoad(thickness_texture, vec2u(input.iuv), 0).r;
-    // Water color (Blue-ish)
-    var diffuseColor = vec3f(0.1, 0.6, 0.9); 
+    
+    // Get color based on material type
+    var diffuseColor = getMaterialColor(materialType);
+    
+    // Adjust density/opacity based on material
+    if (materialType > 4.5) {
+        // Iron is more opaque
+        density = 2.0;
+    } else if (materialType < 1.5 && materialType > 0.5) {
+        // Rubber is more opaque
+        density = 1.5;
+    }
     
     // Beer's law for attenuation
     var transmittance = exp(-density * thickness * (1.0 - diffuseColor)); 
@@ -276,7 +378,13 @@ fn fs(input: FragmentInput) -> FragmentOutput {
     var skyBottom = vec3f(0.9, 0.95, 1.0);
     var reflectionColor = mix(skyBottom, skyTop, clamp(reflectionDirWorld.y * 0.5 + 0.5, 0.0, 1.0));
     
-    var finalColor = 1.0 * specular + mix(refractionColor, reflectionColor, fresnel);
+    // Iron and rubber have less reflection (more matte)
+    var reflectivity = fresnel;
+    if (materialType > 4.5 || (materialType > 0.5 && materialType < 1.5)) {
+        reflectivity = fresnel * 0.3;  // Reduce reflection for metals and rubber
+    }
+    
+    var finalColor = 1.0 * specular + mix(refractionColor, reflectionColor, reflectivity);
     
     // Gamma correction
     var color = vec4f(pow(finalColor, vec3f(1.0/2.2)), 1.0);
@@ -370,7 +478,16 @@ export class FluidRenderer {
       primitive: { topology: 'triangle-list' }
     });
 
-    // 5. Fluid Composition
+    // 5. Material Map Pipeline
+    this.materialMapPipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: device.createShaderModule({ code: MATERIAL_MAP_WGSL }), entryPoint: 'vs' },
+      fragment: { module: device.createShaderModule({ code: MATERIAL_MAP_WGSL }), entryPoint: 'fs', targets: [{ format: 'r32float' }] },
+      primitive: { topology: 'triangle-list' },
+      depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth32float' }
+    });
+
+    // 6. Fluid Composition
     this.fluidPipeline = device.createRenderPipeline({
       layout: 'auto',
       vertex: { module: fullScreenModule, entryPoint: 'vs', constants: { screenWidth: 1, screenHeight: 1 } },
@@ -381,24 +498,8 @@ export class FluidRenderer {
       primitive: { topology: 'triangle-list' },
       depthStencil: { 
           format: 'depth24plus', 
-          depthWriteEnabled: false, // We don't write new depth from full screen quad (it's 2D)
-          depthCompare: 'always' // Actually we might want 'less'?
-          // If we use 'less', the quad at Z=0 (near plane) will be discarded if anything is in front of near plane?
-          // No, Z=0 is closest.
-          // Actually, we manually compute depth in shader if we want to write it.
-          // But here we just want to draw the fluid ON TOP of everything, but occluded by things IN FRONT of it?
-          // Wait, fluid is usually transparent.
-          // If the ball is "in front" of fluid, we want ball to show.
-          // If ball is "behind", we want fluid to show (on top of ball).
-          // The current fluid shader raymarches depth.
-          // To properly handle occlusion, we should check scene depth in shader.
-          // But enabling depth test here with 'always' allows us to draw everywhere.
-          // But if we want hardware occlusion...
-          // Since we draw a full screen quad at Z=0 (near), 'less' would pass if nothing is closer than near plane.
-          // If we want to respect the ball's depth, we must check it in the shader.
-          // OR write frag_depth in shader.
-          // I added frag_depth output to shader in my thought process, but I should add it to code.
-          // Let's update FLUID_WGSL to output frag_depth.
+          depthWriteEnabled: false,
+          depthCompare: 'always'
       }
     });
   }
@@ -414,6 +515,12 @@ export class FluidRenderer {
     this.thicknessTexture = this.device.createTexture({ size: [width, height], format: 'r16float', usage });
     this.tmpThicknessTexture = this.device.createTexture({ size: [width, height], format: 'r16float', usage });
     this.depthTestTexture = this.device.createTexture({ size: [width, height], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+
+    // Material map texture
+    this.materialTexture = this.device.createTexture({ size: [width, height], format: 'r32float', usage });
+    this.materialTextureView = this.materialTexture.createView();
+    this.materialDepthTexture = this.device.createTexture({ size: [width, height], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    this.materialDepthTextureView = this.materialDepthTexture.createView();
 
     this.depthMapTextureView = this.depthMapTexture.createView();
     this.tmpDepthMapTextureView = this.tmpDepthMapTexture.createView();
@@ -539,12 +646,22 @@ export class FluidRenderer {
         })
     ];
 
+    // Material map bind group
+    this.materialMapBindGroup = this.device.createBindGroup({
+        layout: this.materialMapPipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: this.posVelBuffer } },
+            { binding: 1, resource: { buffer: this.renderUniformBuffer } }
+        ]
+    });
+
     this.fluidBindGroup = this.device.createBindGroup({
         layout: this.fluidPipeline.getBindGroupLayout(0),
         entries: [
             { binding: 1, resource: this.depthMapTextureView },
             { binding: 2, resource: { buffer: this.renderUniformBuffer } },
-            { binding: 3, resource: this.thicknessTextureView }
+            { binding: 3, resource: this.thicknessTextureView },
+            { binding: 4, resource: this.materialTextureView }
         ]
     });
   }
@@ -611,7 +728,17 @@ export class FluidRenderer {
     filterDY.draw(6);
     filterDY.end();
 
-    // 3. Thickness
+    // 3. Material Map (renders material type per pixel)
+    const materialPass = commandEncoder.beginRenderPass({
+        colorAttachments: [{ view: this.materialTextureView, clearValue: { r: 2.0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+        depthStencilAttachment: { view: this.materialDepthTextureView, depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store' }
+    });
+    materialPass.setPipeline(this.materialMapPipeline);
+    materialPass.setBindGroup(0, this.materialMapBindGroup);
+    materialPass.draw(6, particleCount);
+    materialPass.end();
+
+    // 4. Thickness
     const thickPass = commandEncoder.beginRenderPass({
         colorAttachments: [{ view: this.thicknessTextureView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }]
     });
@@ -620,7 +747,7 @@ export class FluidRenderer {
     thickPass.draw(6, particleCount);
     thickPass.end();
 
-    // 4. Filter Thickness (X then Y)
+    // 5. Filter Thickness (X then Y)
     // X
     const filterTX = commandEncoder.beginRenderPass({
         colorAttachments: [{ view: this.tmpThicknessTextureView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }]
@@ -638,7 +765,7 @@ export class FluidRenderer {
     filterTY.draw(6);
     filterTY.end();
 
-    // 5. Final Composition (Fluid)
+    // 6. Final Composition (Fluid)
     // Composited against the scene depth buffer for correct occlusion.
     const fluidPass = commandEncoder.beginRenderPass({
         colorAttachments: [{ 
