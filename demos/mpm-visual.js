@@ -46,6 +46,10 @@ const ELEMENTS = [
   { key: "Lead", id: 10 }
 ];
 
+const BASE_SPACING = [0.8, 0.8, 1.0, 1.1, 0.95, 1.0, 0.95, 1.1, 1.0, 1.0, 1.0];
+const EXPANSION_COEFF = [2e-4, 2e-4, 3e-4, 3e-4, 2.5e-4, 2e-4, 1.5e-4, 2.5e-4, 1.8e-4, 1.7e-4, 1.6e-4];
+const BASE_JITTER = [0.05, 0.05, 0.08, 0.1, 0.07, 0.05, 0.05, 0.08, 0.06, 0.05, 0.05];
+
 // Parse URL query parameters
 function getQueryParam(name, defaultValue) {
     const urlParams = new URLSearchParams(window.location.search);
@@ -67,8 +71,8 @@ const params = {
   jitter: 0.1,
   
   // Material selection (two elements)
-  materialA: "Oxygen",
-  materialB: "Iron",
+  materialA: "Titanium",
+  materialB: "Lead",
   temperature: 300.0,
   
   // Physics
@@ -90,7 +94,7 @@ const params = {
   interactionX: 32,
   interactionY: 10,  // Elevated so sphere is inside the fluid
   interactionZ: 32,
-  interactionActive: true,
+  interactionActive: false,
   
   // Thermal interaction (heat source sphere)
   heatSourceTemp: 400,  // Heat source temperature (K). >1 = active. 400K will melt ice, 200K will freeze water
@@ -115,6 +119,22 @@ function addTooltip(controller, text) {
     controller.domElement.title = text;
   }
   return controller;
+}
+
+function deriveSpawnParams(elementId, temperature, ambientPressure) {
+  const idx = Math.max(0, Math.min(elementId, BASE_SPACING.length - 1));
+  const base = BASE_SPACING[idx];
+  const alpha = EXPANSION_COEFF[idx];
+  const jitterBase = BASE_JITTER[idx];
+  const deltaT = temperature - 300.0;
+  let spacing = base * (1.0 + alpha * deltaT);
+  // Compress with higher ambient pressure
+  const pressureScale = 1.0 / Math.max(0.2, 1.0 + 0.1 * (ambientPressure - 1.0));
+  spacing *= pressureScale;
+  spacing = Math.min(Math.max(spacing, 0.4), 2.5);
+  let jitter = jitterBase + Math.abs(deltaT) * 1e-4 + Math.max(0, ambientPressure - 1.0) * 0.02;
+  jitter = Math.min(Math.max(jitter, 0.0), 0.6);
+  return { spacing, jitter };
 }
 
 function applyTooltips(map) {
@@ -422,17 +442,31 @@ async function initSimulation() {
     // Initialize two material blocks (each 50% of particles)
     const halfCount = Math.floor(particleCount / 2);
     const remaining = particleCount - halfCount;
-    const sideA = Math.ceil(Math.cbrt(halfCount));
-    const sideB = Math.ceil(Math.cbrt(remaining));
     const matA = ELEMENTS.find(e => e.key === params.materialA) ?? ELEMENTS[0];
     const matB = ELEMENTS.find(e => e.key === params.materialB) ?? ELEMENTS[1] ?? ELEMENTS[0];
+    const sideA = Math.ceil(Math.cbrt(halfCount));
+    const sideB = Math.ceil(Math.cbrt(remaining));
+    const spawnA = deriveSpawnParams(matA.id, params.temperature, params.ambientPressure);
+    const spawnB = deriveSpawnParams(matB.id, params.temperature, params.ambientPressure);
+    const margin = 2;
+    const maxSideSpan = Math.max(sideA * spawnA.spacing, sideB * spawnB.spacing);
+    const sameY = Math.max(
+      margin,
+      Math.min(gridSize.y - margin - maxSideSpan, gridSize.y * 0.7)
+    );
+    const startA = [margin, sameY, margin];
+    const startB = [
+      Math.max(margin, gridSize.x - margin - sideB * spawnB.spacing),
+      sameY,
+      Math.max(margin, gridSize.z - margin - sideB * spawnB.spacing)
+    ];
     const buf = new ArrayBuffer(particleCount * mpm.MPM_PARTICLE_STRIDE);
     const blockA = mpm.createBlockParticleData({
         count: halfCount,
         gridSize,
-        start: [2, 2, 2],
-        spacing: params.spacing,
-        jitter: params.jitter,
+        start: startA,
+        spacing: spawnA.spacing,
+        jitter: spawnA.jitter,
         temperature: params.temperature,
         restDensity: params.restDensity,
         materialType: matA.id,
@@ -441,9 +475,9 @@ async function initSimulation() {
     const blockB = mpm.createBlockParticleData({
         count: remaining,
         gridSize,
-        start: [gridSize.x * 0.4, gridSize.y * 0.4, gridSize.z * 0.4],
-        spacing: params.spacing,
-        jitter: params.jitter,
+        start: startB,
+        spacing: spawnB.spacing,
+        jitter: spawnB.jitter,
         temperature: params.temperature,
         restDensity: params.restDensity,
         materialType: matB.id,
@@ -581,7 +615,7 @@ async function setup() {
       "Sphere center Y (grid units)");
     addTooltip(interactFolder.add(params, "interactionZ", 0, 100).name("Z"),
       "Sphere center Z (grid units)");
-    addTooltip(interactFolder.add(params, "heatSourceTemp", 0, 5_000, 1).name("Heat Source (K)"),
+    addTooltip(interactFolder.add(params, "heatSourceTemp", 0, 10_000, 1).name("Heat Source (K)"),
       "Temperature of the heat/cool sphere (0 disables thermal effect)");
     
     addTooltip(gui.add({ reset: initSimulation }, "reset").name("Reset Simulation"),

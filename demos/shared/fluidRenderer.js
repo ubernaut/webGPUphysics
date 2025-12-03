@@ -184,11 +184,13 @@ struct VertexOutput {
     @location(0) uv: vec2f, 
     @location(1) view_position: vec3f,
     @location(2) @interpolate(flat) materialType: f32,
+    @location(3) @interpolate(flat) temperature: f32,
 }
 struct FragmentInput { 
     @location(0) uv: vec2f, 
     @location(1) view_position: vec3f,
     @location(2) @interpolate(flat) materialType: f32,
+    @location(3) @interpolate(flat) temperature: f32,
 }
 struct FragmentOutput {
     @location(0) frag_color: vec4f,
@@ -209,7 +211,7 @@ fn vs(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) instanc
     let p = particles[instance_index];
     let view_position = (uniforms.view_matrix * vec4f(p.position, 1.0)).xyz;
     let out_position = uniforms.projection_matrix * vec4f(view_position + corner, 1.0);
-    return VertexOutput(out_position, uv, view_position, p.materialType);
+    return VertexOutput(out_position, uv, view_position, p.materialType, p.temperature);
 }
 
 @fragment
@@ -224,8 +226,9 @@ fn fs(input: FragmentInput) -> FragmentOutput {
     var real_view_pos: vec4f = vec4f(input.view_position + normal * radius, 1.0);
     var clip_space_pos: vec4f = uniforms.projection_matrix * real_view_pos;
     out.frag_depth = clip_space_pos.z / clip_space_pos.w;
-    // Output material type (stored in R channel)
-    out.frag_color = vec4f(input.materialType, 0.0, 0.0, 1.0);
+    // Output material type in R, temperature (normalized later) in G
+    let tNorm = clamp(input.temperature / 10000.0, 0.0, 1.0);
+    out.frag_color = vec4f(input.materialType, tNorm, 0.0, 1.0);
     return out;
 }
 `;
@@ -277,10 +280,7 @@ struct FragmentOutput {
 // Material type constants
 const MATERIAL_BRITTLE_SOLID: f32 = 0.0;  // Ice
 const MATERIAL_ELASTIC_SOLID: f32 = 1.0;  // Rubber
-const MATERIAL_LIQUID: f32 = 2.0;          // Water
-const MATERIAL_GAS: f32 = 3.0;             // Steam
-const MATERIAL_GRANULAR: f32 = 4.0;        // Sand
-const MATERIAL_IRON: f32 = 5.0;            // Iron
+// Element IDs (0..10) map to colors in getMaterialColor
 
 fn computeViewPosFromUVDepth(tex_coord: vec2f, depth: f32) -> vec3f {
     var ndc: vec4f = vec4f(tex_coord.x * 2.0 - 1.0, 1.0 - 2.0 * tex_coord.y, 0.0, 1.0);
@@ -295,27 +295,39 @@ fn getViewPosFromTexCoord(tex_coord: vec2f, iuv: vec2f) -> vec3f {
     return computeViewPosFromUVDepth(tex_coord, depth);
 }
 
-fn getMaterialColor(materialType: f32) -> vec3f {
-    // Return base diffuse color based on material type
-    if (materialType < 0.5) {
-        // Ice (Brittle Solid) - Light cyan/blue
-        return vec3f(0.7, 0.9, 1.0);
-    } else if (materialType < 1.5) {
-        // Rubber (Elastic Solid) - Red
-        return vec3f(0.9, 0.2, 0.2);
-    } else if (materialType < 2.5) {
-        // Water (Liquid) - Blue
-        return vec3f(0.1, 0.6, 0.9);
-    } else if (materialType < 3.5) {
-        // Steam (Gas) - White/light gray
-        return vec3f(0.9, 0.9, 0.95);
-    } else if (materialType < 4.5) {
-        // Granular (Sand) - Tan/brown
-        return vec3f(0.76, 0.70, 0.50);
-    } else {
-        // Iron - Dark gray
-        return vec3f(0.3, 0.3, 0.35);
-    }
+fn getMaterialColor(materialType: f32, tNorm: f32) -> vec3f {
+    // Element-based base colors
+    var base = vec3f(0.6, 0.6, 0.6);
+    if (materialType < 0.5) { base = vec3f(0.7, 0.9, 1.0); }          // H: pale blue
+    else if (materialType < 1.5) { base = vec3f(0.6, 0.8, 1.0); }     // O: light blue
+    else if (materialType < 2.5) { base = vec3f(0.85, 0.85, 0.8); }   // Na: silver
+    else if (materialType < 3.5) { base = vec3f(0.7, 0.6, 0.8); }     // K: violet tint
+    else if (materialType < 4.5) { base = vec3f(0.85, 0.85, 0.85); }  // Mg: silver
+    else if (materialType < 5.5) { base = vec3f(0.85, 0.9, 1.0); }    // Al: bright silver
+    else if (materialType < 6.5) { base = vec3f(0.4, 0.4, 0.45); }    // Si: dark gray
+    else if (materialType < 7.5) { base = vec3f(0.7, 0.7, 0.65); }    // Ca: dull gray
+    else if (materialType < 8.5) { base = vec3f(0.35, 0.35, 0.4); }   // Ti: dark gray-blue
+    else if (materialType < 9.5) { base = vec3f(0.35, 0.33, 0.32); }  // Fe: dark metal
+    else if (materialType < 10.5) { base = vec3f(0.45, 0.45, 0.5); }  // Pb: dark gray-blue
+    let hot = vec3f(1.0, 0.6, 0.3);
+    return mix(base, hot, clamp(tNorm, 0.0, 1.0));
+}
+
+fn getMaterialDensity(materialType: f32, tNorm: f32) -> f32 {
+    var density = 0.5;
+    if (materialType < 0.5) { density = 0.3; }
+    else if (materialType < 1.5) { density = 0.4; }
+    else if (materialType < 2.5) { density = 0.6; }
+    else if (materialType < 3.5) { density = 0.4; }
+    else if (materialType < 4.5) { density = 0.5; }
+    else if (materialType < 5.5) { density = 0.7; }
+    else if (materialType < 6.5) { density = 0.6; }
+    else if (materialType < 7.5) { density = 0.6; }
+    else if (materialType < 8.5) { density = 0.8; }
+    else if (materialType < 9.5) { density = 1.2; }
+    else if (materialType < 10.5) { density = 1.0; }
+    // Thin out slightly at high temperature
+    return density * mix(1.0, 0.7, clamp(tNorm, 0.0, 1.0));
 }
 
 @fragment
@@ -344,23 +356,17 @@ fn fs(input: FragmentInput) -> FragmentOutput {
     var H = normalize(lightDir - rayDir);
     var specular = pow(max(0.0, dot(H, normal)), 250.0);
     
-    // Get material type from texture
-    var materialType = textureLoad(material_texture, vec2u(input.iuv), 0).r;
+    // Get material type and temperature from texture
+    var matSample = textureLoad(material_texture, vec2u(input.iuv), 0);
+    var materialType = matSample.r;
+    var tNorm = clamp(matSample.g, 0.0, 1.0);
     
-    var density = 0.5; // Reduced density for more transparency
+    var density = 0.5; // Base density for transparency
     var thickness = textureLoad(thickness_texture, vec2u(input.iuv), 0).r;
     
-    // Get color based on material type
-    var diffuseColor = getMaterialColor(materialType);
-    
-    // Adjust density/opacity based on material
-    if (materialType > 4.5) {
-        // Iron is more opaque
-        density = 2.0;
-    } else if (materialType < 1.5 && materialType > 0.5) {
-        // Rubber is more opaque
-        density = 1.5;
-    }
+    // Get color and density based on material and temperature
+    var diffuseColor = getMaterialColor(materialType, tNorm);
+    density = getMaterialDensity(materialType, tNorm);
     
     // Beer's law for attenuation
     var transmittance = exp(-density * thickness * (1.0 - diffuseColor)); 

@@ -26,6 +26,26 @@ let baseline = null;
 const MASS_TOL = 1e-2;
 const MOM_TOL = 1e-2;
 const PHYSICS_DT = 0.005;
+let started = false;
+
+const BASE_SPACING = [0.8, 0.8, 1.0, 1.1, 0.95, 1.0, 0.95, 1.1, 1.0, 1.0, 1.0];
+const EXPANSION_COEFF = [2e-4, 2e-4, 3e-4, 3e-4, 2.5e-4, 2e-4, 1.5e-4, 2.5e-4, 1.8e-4, 1.7e-4, 1.6e-4];
+const BASE_JITTER = [0.05, 0.05, 0.08, 0.1, 0.07, 0.05, 0.05, 0.08, 0.06, 0.05, 0.05];
+
+function deriveSpawnParams(elementId, temperature, ambientPressure) {
+  const idx = Math.max(0, Math.min(elementId, BASE_SPACING.length - 1));
+  const base = BASE_SPACING[idx];
+  const alpha = EXPANSION_COEFF[idx];
+  const jitterBase = BASE_JITTER[idx];
+  const deltaT = temperature - 300.0;
+  let spacing = base * (1.0 + alpha * deltaT);
+  const pressureScale = 1.0 / Math.max(0.2, 1.0 + 0.1 * (ambientPressure - 1.0));
+  spacing *= pressureScale;
+  spacing = Math.min(Math.max(spacing, 0.4), 2.5);
+  let jitter = jitterBase + Math.abs(deltaT) * 1e-4 + Math.max(0, ambientPressure - 1.0) * 0.02;
+  jitter = Math.min(Math.max(jitter, 0.0), 0.6);
+  return { spacing, jitter };
+}
 const constants = {
   stiffness: 2.5,
   restDensity: 4.0,
@@ -62,21 +82,25 @@ async function setup() {
     setStatus("initializing WebGPU…");
     const { device } = await initWebGPU();
 
-    const particleCount = 4000;
-    const gridSize = { x: 32, y: 32, z: 32 };
     const params = new URLSearchParams(window.location.search);
+    const particleCount = parseInt(params.get("count") || "1000", 10);
+    const gridSize = { x: 32, y: 32, z: 32 };
     const materialName = params.get("material") || "Oxygen";
     const matIndex = Math.max(0, ELEMENTS.indexOf(materialName));
+    const tempOverride = params.get("temp");
+    const stepsRequested = parseInt(params.get("steps") || "0", 10);
 
     setStatus("creating MLS-MPM…");
     const sideCount = Math.ceil(Math.cbrt(particleCount));
+    const spawn = deriveSpawnParams(matIndex, tempOverride ? parseFloat(tempOverride) : 300.0, constants.ambientPressure || 1.0);
     const blockOptions = {
       start: [2, 2, 2],
       gridSize,
-      jitter: 0.25,
-      spacing: 0.65,
+      jitter: spawn.jitter,
+      spacing: spawn.spacing,
       materialType: matIndex,
-      cubeSideCount: sideCount
+      cubeSideCount: sideCount,
+      temperature: tempOverride ? parseFloat(tempOverride) : undefined
     };
     
     // Sub-stepping
@@ -91,14 +115,18 @@ async function setup() {
       blockOptions,
       constants
     });
+    window.__mpmStarted = false;
 
     particleCountEl.textContent = particleCount.toString();
     gridSizeEl.textContent = `${gridSize.x}×${gridSize.y}×${gridSize.z}`;
     setStatus("running");
 
+    let stepsRan = 0;
     function loop(ts) {
       if (running && sim) {
         sim.step();
+        window.__mpmStarted = true;
+        stepsRan += 1;
       }
       // Diagnostics every 500 ms (avoid overlap)
       if (sim && !pendingDiag && (ts - lastCheck) > 500) {
@@ -129,6 +157,11 @@ async function setup() {
           })
           .catch(setError)
           .finally(() => { pendingDiag = false; });
+      }
+      if (stepsRequested > 0 && stepsRan >= stepsRequested) {
+        window.__mpmDone = true;
+        window.__mpmStepsRan = stepsRan;
+        return;
       }
       requestAnimationFrame(loop);
     }
